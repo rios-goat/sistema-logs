@@ -185,9 +185,16 @@ class Bot(commands.Bot):
     async def setup_hook(self):
         init_db()
         with db() as c:
-            pending=[x["id"] for x in c.execute("SELECT id FROM registrations WHERE status='PENDENTE'")]
+            pending=c.execute("SELECT * FROM registrations WHERE status='PENDENTE'").fetchall()
             reviewed=[x["id"] for x in c.execute("SELECT id FROM registrations WHERE status IN ('APROVADO','REPROVADO')")]
-        for rid in pending: self.add_view(ReviewView(rid))
+        for r in pending:
+            flags=json.loads(r["flags"])
+            stats=f"👁️ **Views:** {r['views']:,}\n❤️ **Curtidas:** {r['likes']:,}\n👥 **Seguidores:** {r['followers']:,}"
+            verification="\n".join(f"• {flag}" for flag in flags) if flags else "✅ Nenhuma duplicidade detectada.\nA conferência visual continua necessária."
+            media_type=(r["proof_type"] or "").lower()
+            image_ext=bool(r["proof_url"] and r["proof_url"].split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp")))
+            is_image=bool(r["proof_url"] and (media_type.startswith("image/") or image_ext))
+            self.add_view(ReviewView(r["id"],r["user_id"],r["roblox"],r["account"],stats,r["logs"],verification,r["proof_url"],is_image))
         for rid in reviewed: self.add_view(MemberDecisionView(rid))
         await self.tree.sync()
 intents=discord.Intents.default()
