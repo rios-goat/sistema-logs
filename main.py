@@ -32,6 +32,15 @@ def init_db():
             reviewer INTEGER,reason TEXT,created TEXT NOT NULL,reviewed TEXT
         );
         CREATE TABLE IF NOT EXISTS live_proof_hashes(hash TEXT PRIMARY KEY,live_id INTEGER NOT NULL,user_id INTEGER NOT NULL,created TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS log_transfers(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender_id INTEGER NOT NULL, receiver_id INTEGER NOT NULL,
+            amount INTEGER NOT NULL, reason TEXT NOT NULL,
+            sender_accepted INTEGER NOT NULL DEFAULT 0,
+            receiver_accepted INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'PENDENTE',
+            reviewer_id INTEGER, created TEXT NOT NULL, reviewed TEXT
+        );
         CREATE INDEX IF NOT EXISTS live_created ON live_registrations(created,status);
 
         CREATE INDEX IF NOT EXISTS reg_user ON registrations(user_id,id);
@@ -272,6 +281,78 @@ class MemberDecisionView(discord.ui.LayoutView):
         async def callback(i): await i.response.send_modal(MemberReplyModal(rid))
         button.callback=callback
         self.add_item(discord.ui.Container(discord.ui.TextDisplay(heading or f"## Resultado do cadastro #{rid}"),discord.ui.Separator(),discord.ui.TextDisplay(detail or "Use o botão abaixo para responder."),discord.ui.ActionRow(button),accent_colour=0x9167FF))
+def transfer_record(tid):
+    with db() as c:
+        return c.execute("SELECT * FROM log_transfers WHERE id=?",(tid,)).fetchone()
+
+def finish_transfer(tid,actor):
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        t=c.execute("SELECT * FROM log_transfers WHERE id=?",(tid,)).fetchone()
+        if not t: return False,"Transferência não encontrada."
+        if t["status"]!="PENDENTE": return False,"Essa transferência já foi finalizada."
+        if not t["sender_accepted"] or not t["receiver_accepted"]:
+            return False,"As duas pessoas precisam aceitar antes da aprovação."
+        try:
+            movement(c,t["sender_id"],-t["amount"],"TRANSFERENCIA_ENVIADA",f"Transferência #{tid} enviada para <@{t['receiver_id']}>: {t['reason']}",actor,tid)
+            movement(c,t["receiver_id"],t["amount"],"TRANSFERENCIA_RECEBIDA",f"Transferência #{tid} recebida de <@{t['sender_id']}>: {t['reason']}",actor,tid)
+        except ValueError:
+            return False,"O saldo de quem envia ficou insuficiente. A transferência não foi realizada."
+        c.execute("UPDATE log_transfers SET status='APROVADA',reviewer_id=?,reviewed=? WHERE id=?",(actor,now(),tid))
+    return True,"Transferência aprovada e LOGS movimentados com sucesso."
+
+class TransferView(discord.ui.LayoutView):
+    def __init__(self,tid):
+        super().__init__(timeout=None)
+        t=transfer_record(tid)
+        if not t:
+            self.add_item(discord.ui.Container(discord.ui.TextDisplay("Transferência não encontrada."),accent_colour=0xE74C3C))
+            return
+        sender=f"<@{t['sender_id']}>"; receiver=f"<@{t['receiver_id']}>"
+        status={"PENDENTE":"⏳ Aguardando confirmações","APROVADA":"✅ Transferência aprovada","REPROVADA":"❌ Transferência recusada"}.get(t["status"],t["status"])
+        checklist=f"⏳ Quem envia: {'aceitou' if t['sender_accepted'] else 'aguardando'}\n⏳ Quem recebe: {'aceitou' if t['receiver_accepted'] else 'aguardando'}\n🛡️ ADM: {'aprovado' if t['status']=='APROVADA' else 'pendente' if t['status']=='PENDENTE' else 'finalizado'}"
+        items=[
+            discord.ui.TextDisplay(f"### 🔹 LOGS › Transferência de saldo #{tid}\n\n💱 **{t['amount']:,} LOGS**\n\n{status}\n━━━━━━━━━━━━━━━━━━━━"),
+            discord.ui.TextDisplay(f"{sender} ➡️ {receiver}\n\n💼 **Movimento**\n➡️ Envia: {sender}\n⬅️ Recebe: {receiver}\n\n💰 **Resumo antes de confirmar**\nSaldo de quem envia agora: **{balance(t['sender_id']):,} LOGS**\nSaldo após transferência: **{max(0,balance(t['sender_id'])-t['amount']):,} LOGS**\n\n⏳ **Checklist**\n{checklist}\n\n📝 **Motivo**\n{t['reason']}\n\n🛡️ **Solicitado por**\n{sender}\nID: {t['sender_id']}"),
+        ]
+        buttons=[]
+        if t["status"]=="PENDENTE":
+            buttons.append(discord.ui.Button(label="✅ Quem envia aceita",style=discord.ButtonStyle.secondary,custom_id=f"logs:transfer:sender:{tid}",disabled=bool(t["sender_accepted"])))
+            buttons.append(discord.ui.Button(label="✅ Quem recebe aceita",style=discord.ButtonStyle.secondary,custom_id=f"logs:transfer:receiver:{tid}",disabled=bool(t["receiver_accepted"])))
+            buttons.append(discord.ui.Button(label="🛡️ ADM aprovar",style=discord.ButtonStyle.success,custom_id=f"logs:transfer:approve:{tid}",disabled=not (t["sender_accepted"] and t["receiver_accepted"])))
+            buttons.append(discord.ui.Button(label="❌ ADM reprovar",style=discord.ButtonStyle.danger,custom_id=f"logs:transfer:reject:{tid}"))
+            for button in buttons:
+                async def callback(i,b=button):
+                    if b.custom_id.startswith("logs:transfer:sender:"):
+                        if i.user.id!=t["sender_id"]: return await i.response.send_message("Somente quem envia pode confirmar.",ephemeral=True)
+                        await self.accept(i,tid,"sender")
+                    elif b.custom_id.startswith("logs:transfer:receiver:"):
+                        if i.user.id!=t["receiver_id"]: return await i.response.send_message("Somente quem recebe pode confirmar.",ephemeral=True)
+                        await self.accept(i,tid,"receiver")
+                    elif b.custom_id.startswith("logs:transfer:approve:"):
+                        if not i.guild or not i.user.guild_permissions.administrator: return await i.response.send_message("Somente administradores podem aprovar.",ephemeral=True)
+                        ok,msg=finish_transfer(tid,i.user.id)
+                        if ok: await audit(i.guild,f"✅ Transferência #{tid} aprovada por {i.user.mention}: {t['amount']} LOGS de <@{t['sender_id']}> para <@{t['receiver_id']}>.")
+                        await i.response.send_message(msg,ephemeral=True)
+                        await i.message.edit(view=TransferView(tid))
+                    else:
+                        if not i.guild or not i.user.guild_permissions.administrator: return await i.response.send_message("Somente administradores podem reprovar.",ephemeral=True)
+                        with db() as c: c.execute("UPDATE log_transfers SET status='REPROVADA',reviewer_id=?,reviewed=? WHERE id=? AND status='PENDENTE'",(i.user.id,now(),tid))
+                        await i.response.send_message("Transferência reprovada. Nenhum saldo foi alterado.",ephemeral=True)
+                        await audit(i.guild,f"❌ Transferência #{tid} reprovada por {i.user.mention}.")
+                        await i.message.edit(view=TransferView(tid))
+                button.callback=callback
+            items.append(discord.ui.ActionRow(*buttons))
+        items.append(discord.ui.TextDisplay("-# Sistema de LOGS • Transferência sujeita à confirmação das duas pessoas e aprovação administrativa."))
+        self.add_item(discord.ui.Container(*items,accent_colour=0x9167FF))
+    async def accept(self,i,tid,who):
+        with db() as c:
+            t=c.execute("SELECT * FROM log_transfers WHERE id=?",(tid,)).fetchone()
+            if not t or t["status"]!="PENDENTE": return await i.response.send_message("Esta transferência não está mais pendente.",ephemeral=True)
+            col="sender_accepted" if who=="sender" else "receiver_accepted"
+            c.execute(f"UPDATE log_transfers SET {col}=1 WHERE id=?",(tid,))
+        await i.response.edit_message(view=TransferView(tid))
+
 class Bot(commands.Bot):
     async def setup_hook(self):
         init_db()
@@ -292,6 +373,9 @@ class Bot(commands.Bot):
             ext=r["proof_url"].split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp"))
             self.add_view(LiveReviewView(r["id"],r["user_id"],r["roblox"],r["discord_nick"],r["comex_role"],r["views"],r["logs"],flags,r["proof_url"],media.startswith("image/") or ext))
         for rid in reviewed: self.add_view(MemberDecisionView(rid))
+        with db() as c:
+            transfer_ids=[r["id"] for r in c.execute("SELECT id FROM log_transfers WHERE status='PENDENTE'")]
+        for tid in transfer_ids: self.add_view(TransferView(tid))
         await self.tree.sync()
 intents=discord.Intents.default()
 bot=Bot(command_prefix="!",intents=intents)
@@ -385,6 +469,18 @@ async def registrar_logs(i:discord.Interaction,roblox_nick:app_commands.Range[st
         if proof_hash: c.execute("INSERT OR IGNORE INTO proof_hashes VALUES(?,?,?,?)",(proof_hash,rid,i.user.id,now()))
     await i.response.send_message(f"Cadastro #{rid} enviado! Cálculo: {total} LOGS. Status: PENDENTE; o saldo só entra após aprovação.\n\n📅 Aviso: para as contagens semanais, só entram registros feitos nesta semana (segunda a domingo).",ephemeral=True)
     await post_review(bot,rid); await audit(i.guild,f"📥 Novo cadastro #{rid} enviado por {i.user.mention}.")
+@bot.tree.command(name="transferir_logs",description="Solicita uma transferência de LOGS para outro membro.")
+async def transferir_logs(i:discord.Interaction,recebedor:discord.Member,quantidade:app_commands.Range[int,1,1000000000],motivo:app_commands.Range[str,1,250]):
+    if recebedor.bot: return await i.response.send_message("Não é possível transferir LOGS para bots.",ephemeral=True)
+    if recebedor.id==i.user.id: return await i.response.send_message("Você não pode transferir LOGS para si mesmo.",ephemeral=True)
+    saldo=balance(i.user.id)
+    if quantidade>saldo: return await i.response.send_message(f"Saldo insuficiente. Sua carteira tem **{saldo:,} LOGS**.",ephemeral=True)
+    with db() as c:
+        cur=c.execute("INSERT INTO log_transfers(sender_id,receiver_id,amount,reason,created) VALUES(?,?,?,?,?)",(i.user.id,recebedor.id,quantidade,motivo,now()))
+        tid=cur.lastrowid
+    await i.response.send_message(f"🔄 Pedido de transferência: {i.user.mention} e {recebedor.mention} precisam aceitar. Depois um ADM aprova aqui mesmo.",view=TransferView(tid))
+    await audit(i.guild,f"🔄 Nova transferência #{tid}: {i.user.mention} solicitou {quantidade} LOGS para {recebedor.mention}. Motivo: {motivo}")
+
 @bot.tree.command(name="carteira",description="Consulta seu saldo de LOGS.")
 async def carteira(i): await i.response.send_message(f"Sua carteira: **{balance(i.user.id)} LOGS**.",ephemeral=True)
 @bot.tree.command(name="meus_logs",description="Mostra seus cadastros e movimentações recentes.")
