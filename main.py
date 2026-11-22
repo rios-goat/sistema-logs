@@ -45,9 +45,9 @@ def rules():
     with db() as c: return {r["k"]:r["v"] for r in c.execute("SELECT * FROM settings")}
 def calculate(v,l,f):
     r=rules(); return v//r["views_unit"]*r["views_logs"]+l//r["likes_unit"]*r["likes_logs"]+f//r["followers_unit"]*r["followers_logs"]
-def calculate_live(views,likes):
+def calculate_live(views):
     r=rules()
-    return views//r["live_views_unit"]*r["live_views_logs"]+likes//r["live_likes_unit"]*r["live_likes_logs"]
+    return views//r["live_views_unit"]*r["live_views_logs"]
 def live_registration(rid):
     with db() as c: return c.execute("SELECT * FROM live_registrations WHERE id=?",(rid,)).fetchone()
 def approve_live(rid,actor,reason):
@@ -78,7 +78,7 @@ async def post_live_review(rid):
     media=(r["proof_type"] or "").lower()
     image_ext=r["proof_url"].split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp"))
     is_image=media.startswith("image/") or image_ext
-    bot_view=LiveReviewView(rid,r["user_id"],r["roblox"],r["discord_nick"],r["comex_role"],r["views"],r["likes"],r["logs"],flags,r["proof_url"],is_image)
+    bot_view=LiveReviewView(rid,r["user_id"],r["roblox"],r["discord_nick"],r["comex_role"],r["views"],r["logs"],flags,r["proof_url"],is_image)
     await ch.send(view=bot_view)
 def balance(uid):
     with db() as c:
@@ -171,7 +171,7 @@ class LiveReviewModal(discord.ui.Modal):
                 try: await i.message.edit(view=None)
                 except Exception: log.exception("Falha ao atualizar painel LIVE.")
 class LiveReviewView(discord.ui.LayoutView):
-    def __init__(self,rid,user_id,roblox,discord_nick,role,views,likes,logs,flags,proof_url,is_image):
+    def __init__(self,rid,user_id,roblox,discord_nick,role,views,logs,flags,proof_url,is_image):
         super().__init__(timeout=None)
         yes=discord.ui.Button(label="Aprovar",style=discord.ButtonStyle.success,custom_id=f"logs:live:approve:{rid}",emoji="✅")
         no=discord.ui.Button(label="Reprovar",style=discord.ButtonStyle.danger,custom_id=f"logs:live:reject:{rid}",emoji="❌")
@@ -285,7 +285,7 @@ class Bot(commands.Bot):
         for r in live_pending:
             flags=json.loads(r["flags"]); media=(r["proof_type"] or "").lower()
             ext=r["proof_url"].split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp"))
-            self.add_view(LiveReviewView(r["id"],r["user_id"],r["roblox"],r["discord_nick"],r["comex_role"],r["views"],r["likes"],r["logs"],flags,r["proof_url"],media.startswith("image/") or ext))
+            self.add_view(LiveReviewView(r["id"],r["user_id"],r["roblox"],r["discord_nick"],r["comex_role"],r["views"],r["logs"],flags,r["proof_url"],media.startswith("image/") or ext))
         for rid in reviewed: self.add_view(MemberDecisionView(rid))
         await self.tree.sync()
 intents=discord.Intents.default()
@@ -318,32 +318,31 @@ async def editar_conta_live(i:discord.Interaction,views_unidade:app_commands.Ran
     await i.response.send_message("✅ **Regras de LIVES atualizadas parcialmente.**\n"+summary,ephemeral=True)
     await audit(i.guild,f"⚙️ {i.user.mention} atualizou parcialmente as regras de conversão LIVE.")
 @bot.tree.command(name="registrar_logs_live",description="Envia uma LIVE para análise e cálculo de LOGS.")
-async def registrar_logs_live(i:discord.Interaction,nickroblox:app_commands.Range[str,1,80],nickdiscord:app_commands.Range[str,1,80],cargonocomex:app_commands.Range[str,1,100],viewsdalive:app_commands.Range[int,0,100000000],curtidas:app_commands.Range[int,0,100000000],comprovacao:discord.Attachment):
+async def registrar_logs_live(i:discord.Interaction,nickroblox:app_commands.Range[str,1,80],nickdiscord:app_commands.Range[str,1,80],cargonocomex:app_commands.Range[str,1,100],viewsdalive:app_commands.Range[int,0,100000000],comprovacao:discord.Attachment):
     if comprovacao.size>8*1024*1024: return await i.response.send_message("Comprovação maior que 8 MB.",ephemeral=True)
     if not (comprovacao.content_type or "").startswith(("image/","video/")): return await i.response.send_message("Envie uma imagem ou vídeo como comprovação.",ephemeral=True)
     try: raw=await comprovacao.read()
     except Exception: return await i.response.send_message("Não consegui ler a comprovação.",ephemeral=True)
     proof_hash=hashlib.sha256(raw).hexdigest()
     flags=[]
-    total=calculate_live(viewsdalive,curtidas)
+    total=calculate_live(viewsdalive)
     with db() as c:
         old=c.execute("SELECT live_id,user_id FROM live_proof_hashes WHERE hash=?",(proof_hash,)).fetchone()
         if old: flags.append(f"Comprovação idêntica já usada no cadastro LIVE #{old['live_id']} (usuário {old['user_id']}).")
-        if not (viewsdalive or curtidas): flags.append("Visualizações e curtidas estão zeradas.")
-        cur=c.execute("INSERT INTO live_registrations(user_id,roblox,discord_nick,comex_role,views,likes,logs,proof_url,proof_hash,proof_type,flags,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(i.user.id,nickroblox,nickdiscord,cargonocomex,viewsdalive,curtidas,total,comprovacao.url,proof_hash,comprovacao.content_type or "",json.dumps(flags,ensure_ascii=False),now()))
+        if not viewsdalive: flags.append("As visualizações estão zeradas.")
+        cur=c.execute("INSERT INTO live_registrations(user_id,roblox,discord_nick,comex_role,views,likes,logs,proof_url,proof_hash,proof_type,flags,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(i.user.id,nickroblox,nickdiscord,cargonocomex,viewsdalive,0,total,comprovacao.url,proof_hash,comprovacao.content_type or "",json.dumps(flags,ensure_ascii=False),now()))
         rid=cur.lastrowid
         c.execute("INSERT OR IGNORE INTO live_proof_hashes VALUES(?,?,?,?)",(proof_hash,rid,i.user.id,now()))
     await i.response.send_message(f"Cadastro LIVE #{rid} enviado para análise. Cálculo preliminar: **{total} LOGS**. O crédito ocorre somente após aprovação.",ephemeral=True)
     await post_live_review(rid)
     await audit(i.guild,f"🔴 Novo cadastro LIVE #{rid} enviado por {i.user.mention}.")
-@bot.tree.command(name="ranking_semanal",description="Top 3 semanal de views e curtidas em LIVES aprovadas.")
+@bot.tree.command(name="ranking_semanal",description="Top 3 semanal de visualizações em LIVES aprovadas.")
 async def ranking_semanal(i:discord.Interaction):
     from datetime import timedelta
     today=datetime.now(timezone.utc)
     monday=today.replace(hour=0,minute=0,second=0,microsecond=0)-timedelta(days=today.weekday())
     with db() as c:
         views=c.execute("SELECT user_id,discord_nick,SUM(views) total FROM live_registrations WHERE status='APROVADO' AND reviewed>=? GROUP BY user_id,discord_nick ORDER BY total DESC LIMIT 3",(monday.isoformat(timespec="seconds"),)).fetchall()
-        likes=c.execute("SELECT user_id,discord_nick,SUM(likes) total FROM live_registrations WHERE status='APROVADO' AND reviewed>=? GROUP BY user_id,discord_nick ORDER BY total DESC LIMIT 3",(monday.isoformat(timespec="seconds"),)).fetchall()
     def lines(rows):
         return "\n".join(f"**{n}.** <@{r['user_id']}> — **{r['total']:,}** ({r['discord_nick']})" for n,r in enumerate(rows,1)) or "Ainda não há LIVES aprovadas nesta semana."
     layout=discord.ui.LayoutView(timeout=None)
