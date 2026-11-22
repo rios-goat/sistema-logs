@@ -24,7 +24,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS registrations(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,roblox TEXT NOT NULL,account TEXT NOT NULL,views INTEGER NOT NULL,likes INTEGER NOT NULL,followers INTEGER NOT NULL,logs INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'PENDENTE',proof_url TEXT,proof_hash TEXT,proof_type TEXT,flags TEXT NOT NULL DEFAULT '[]',reviewer INTEGER,reason TEXT,created TEXT NOT NULL,reviewed TEXT);
         CREATE TABLE IF NOT EXISTS movements(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,amount INTEGER NOT NULL,balance_after INTEGER NOT NULL,kind TEXT NOT NULL,reason TEXT NOT NULL,actor INTEGER NOT NULL,registration_id INTEGER,created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS proof_hashes(hash TEXT PRIMARY KEY,registration_id INTEGER NOT NULL,user_id INTEGER NOT NULL,created TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS member_responses(id INTEGER PRIMARY KEY AUTOINCREMENT,registration_id INTEGER NOT NULL,user_id INTEGER NOT NULL,response TEXT NOT NULL,created TEXT NOT NULL);\n        CREATE TABLE IF NOT EXISTS live_registrations(
+        CREATE TABLE IF NOT EXISTS member_responses(id INTEGER PRIMARY KEY AUTOINCREMENT,registration_id INTEGER NOT NULL,user_id INTEGER NOT NULL,response TEXT NOT NULL,created TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS live_registrations(
             id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,roblox TEXT NOT NULL,discord_nick TEXT NOT NULL,comex_role TEXT NOT NULL,
             views INTEGER NOT NULL,likes INTEGER NOT NULL,logs INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'PENDENTE',
             proof_url TEXT NOT NULL,proof_hash TEXT,proof_type TEXT,flags TEXT NOT NULL DEFAULT '[]',
