@@ -179,7 +179,7 @@ class LiveReviewView(discord.ui.LayoutView):
         async def no_cb(i): await i.response.send_modal(LiveReviewModal(rid,False))
         yes.callback=yes_cb; no.callback=no_cb
         items=[discord.ui.TextDisplay(f"# 🔴 Cadastro de LIVE #{rid}\n**Responsável:** <@{user_id}>\n**Nick Roblox:** {roblox}\n**Nick Discord:** {discord_nick}\n**Cargo COMEX:** {role}"),
-            discord.ui.Separator(),discord.ui.TextDisplay(f"### 📊 Resultado da LIVE\n👁️ **Visualizações:** {views:,}\n❤️ **Curtidas:** {likes:,}\n💰 **LOGS calculados:** {logs}"),
+            discord.ui.Separator(),discord.ui.TextDisplay(f"### 📊 Resultado da LIVE\n👁️ **Visualizações:** {views:,}\n💰 **LOGS calculados:** {logs}"),
             discord.ui.TextDisplay("### 🛡️ Verificação\n"+("\n".join("• "+x for x in flags) if flags else "✅ Nenhuma duplicidade detectada; confira a comprovação."))]
         if is_image: items.append(discord.ui.MediaGallery(discord.MediaGalleryItem(proof_url,description="Comprovação da LIVE")))
         items.append(discord.ui.Separator())
@@ -346,7 +346,7 @@ async def ranking_semanal(i:discord.Interaction):
     def lines(rows):
         return "\n".join(f"**{n}.** <@{r['user_id']}> — **{r['total']:,}** ({r['discord_nick']})" for n,r in enumerate(rows,1)) or "Ainda não há LIVES aprovadas nesta semana."
     layout=discord.ui.LayoutView(timeout=None)
-    layout.add_item(discord.ui.Container(discord.ui.TextDisplay(f"# 🏆 RANKING SEMANAL\n-# Semana iniciada em {monday.strftime('%d/%m/%Y')} (UTC)"),discord.ui.Separator(),discord.ui.TextDisplay("## 👁️ Top 3 • Visualizações\n"+lines(views)),discord.ui.Separator(),discord.ui.TextDisplay("## ❤️ Top 3 • Curtidas\n"+lines(likes)),discord.ui.TextDisplay("-# Somente cadastros LIVE aprovados entram na classificação."),accent_colour=0x9167FF))
+    layout.add_item(discord.ui.Container(discord.ui.TextDisplay(f"# 🏆 RANKING SEMANAL\n-# Semana iniciada em {monday.strftime('%d/%m/%Y')} (UTC)"),discord.ui.Separator(),discord.ui.TextDisplay("## 👁️ Top 3 • Visualizações\n"+lines(views)),discord.ui.TextDisplay("-# Somente cadastros LIVE aprovados entram na classificação."),accent_colour=0x9167FF))
     await i.response.send_message(view=layout)
 @bot.tree.command(name="registrar_logs",description="Envia números e comprovante para análise.")
 async def registrar_logs(i:discord.Interaction,roblox_nick:app_commands.Range[str,1,80],conta_social:app_commands.Range[str,1,150],curtidas:app_commands.Range[int,0,100000000],seguidores:app_commands.Range[int,0,100000000],views:app_commands.Range[int,0,100000000]=0,comprovante:discord.Attachment=None,link_comprovante:str=None):
