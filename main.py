@@ -88,7 +88,8 @@ async def post_review(bot,rid):
 class ReviewView(discord.ui.View):
     def __init__(self,rid):
         super().__init__(timeout=None); self.rid=rid
-        self.approve_button.custom_id=f"logs:approve:{rid}"; self.reject_button.custom_id=f"logs:reject:{rid}"
+        self.children[0].custom_id=f"logs:approve:{rid}"
+        self.children[1].custom_id=f"logs:reject:{rid}"
     async def interaction_check(self,i):
         if not i.guild or not i.user.guild_permissions.administrator:
             await i.response.send_message("Somente administradores podem revisar.",ephemeral=True); return False
