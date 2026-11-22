@@ -44,7 +44,7 @@ def init_db():
 def rules():
     with db() as c: return {r["k"]:r["v"] for r in c.execute("SELECT * FROM settings")}
 def calculate(v,l,f):
-    r=rules(); return v//r["views_unit"]*r["views_logs"]+l//r["likes_unit"]*r["likes_logs"]+f//r["followers_unit"]*r["followers_logs"]
+    r=rules(); return l//r["likes_unit"]*r["likes_logs"]
 def calculate_live(views):
     r=rules()
     return views//r["live_views_unit"]*r["live_views_logs"]
