@@ -28,7 +28,9 @@ def init_db():
         CREATE INDEX IF NOT EXISTS reg_user ON registrations(user_id,id);
         CREATE INDEX IF NOT EXISTS mov_user ON movements(user_id,id);
         """)
-        cols={row[1] for row in c.execute("PRAGMA table_info(registrations)")}\n        if "proof_type" not in cols: c.execute("ALTER TABLE registrations ADD COLUMN proof_type TEXT")\n        defaults={"views_unit":20,"views_logs":1,"likes_unit":100,"likes_logs":20,"followers_unit":100,"followers_logs":1}
+        cols={row[1] for row in c.execute("PRAGMA table_info(registrations)")}
+        if "proof_type" not in cols: c.execute("ALTER TABLE registrations ADD COLUMN proof_type TEXT")
+        defaults={"views_unit":20,"views_logs":1,"likes_unit":100,"likes_logs":20,"followers_unit":100,"followers_logs":1}
         for k,v in defaults.items(): c.execute("INSERT OR IGNORE INTO settings VALUES(?,?)",(k,v))
 def rules():
     with db() as c: return {r["k"]:r["v"] for r in c.execute("SELECT * FROM settings")}
@@ -119,14 +121,20 @@ class ReviewReasonModal(discord.ui.Modal):
                 try: await i.message.edit(view=None)
                 except Exception: log.exception("Não foi possível atualizar painel de análise.")
 class ReviewView(discord.ui.LayoutView):
-    def __init__(self,rid,content=None):
+    def __init__(self,rid,content=None,proof_url=None,proof_type=None):
         super().__init__(timeout=None)
         yes=discord.ui.Button(label="Aprovar",style=discord.ButtonStyle.success,custom_id=f"logs:approve:{rid}")
         no=discord.ui.Button(label="Reprovar",style=discord.ButtonStyle.danger,custom_id=f"logs:reject:{rid}")
         async def yes_cb(i): await i.response.send_modal(ReviewReasonModal(rid,True))
         async def no_cb(i): await i.response.send_modal(ReviewReasonModal(rid,False))
         yes.callback=yes_cb; no.callback=no_cb
-        items=[discord.ui.TextDisplay(content or f"## Revisão do cadastro #{rid}")]\n        media_type=(proof_type or "").lower()\n        image_ext=bool(proof_url and proof_url.split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp")))\n        if proof_url and (media_type.startswith("image/") or image_ext):\n            items.append(discord.ui.MediaGallery(discord.MediaGalleryItem(proof_url,description="Comprovante enviado")))\n        items.extend([discord.ui.Separator(),discord.ui.ActionRow(yes,no)])\n        self.add_item(discord.ui.Container(*items,accent_colour=0x9167FF))
+        items=[discord.ui.TextDisplay(content or f"## Revisão do cadastro #{rid}")]
+        media_type=(proof_type or "").lower()
+        image_ext=bool(proof_url and proof_url.split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp")))
+        if proof_url and (media_type.startswith("image/") or image_ext):
+            items.append(discord.ui.MediaGallery(discord.MediaGalleryItem(proof_url,description="Comprovante enviado")))
+        items.extend([discord.ui.Separator(),discord.ui.ActionRow(yes,no)])
+        self.add_item(discord.ui.Container(*items,accent_colour=0x9167FF))
     async def interaction_check(self,i):
         if not i.guild or not i.user.guild_permissions.administrator:
             await i.response.send_message("Somente administradores podem revisar.",ephemeral=True); return False
