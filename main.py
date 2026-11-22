@@ -44,7 +44,7 @@ def init_db():
 def rules():
     with db() as c: return {r["k"]:r["v"] for r in c.execute("SELECT * FROM settings")}
 def calculate(v,l,f):
-    r=rules(); return l//r["likes_unit"]*r["likes_logs"]
+    r=rules(); return l*r["likes_logs"]//r["likes_unit"]
 def calculate_live(views):
     r=rules()
     return views//r["live_views_unit"]*r["live_views_logs"]
@@ -333,7 +333,7 @@ async def registrar_logs_live(i:discord.Interaction,nickroblox:app_commands.Rang
         cur=c.execute("INSERT INTO live_registrations(user_id,roblox,discord_nick,comex_role,views,likes,logs,proof_url,proof_hash,proof_type,flags,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(i.user.id,nickroblox,nickdiscord,cargonocomex,viewsdalive,0,total,comprovacao.url,proof_hash,comprovacao.content_type or "",json.dumps(flags,ensure_ascii=False),now()))
         rid=cur.lastrowid
         c.execute("INSERT OR IGNORE INTO live_proof_hashes VALUES(?,?,?,?)",(proof_hash,rid,i.user.id,now()))
-    await i.response.send_message(f"Cadastro LIVE #{rid} enviado para análise. Cálculo preliminar: **{total} LOGS**. O crédito ocorre somente após aprovação.",ephemeral=True)
+    await i.response.send_message(f"Cadastro LIVE #{rid} enviado para análise. Cálculo preliminar: **{total} LOGS**. O crédito ocorre somente após aprovação.\n\n📅 Aviso: para as contagens semanais, só entram registros feitos nesta semana (segunda a domingo).",ephemeral=True)
     await post_live_review(rid)
     await audit(i.guild,f"🔴 Novo cadastro LIVE #{rid} enviado por {i.user.mention}.")
 @bot.tree.command(name="ranking_semanal",description="Top 3 semanal de views e curtidas dos vídeos aprovados.")
@@ -341,9 +341,10 @@ async def ranking_semanal(i:discord.Interaction):
     from datetime import timedelta
     today=datetime.now(timezone.utc)
     monday=today.replace(hour=0,minute=0,second=0,microsecond=0)-timedelta(days=today.weekday())
+    next_monday=monday+timedelta(days=7)
     with db() as c:
-        views=c.execute("SELECT user_id,account,SUM(views) total FROM registrations WHERE status='APROVADO' AND reviewed>=? GROUP BY user_id,account ORDER BY total DESC LIMIT 3",(monday.isoformat(timespec="seconds"),)).fetchall()
-        likes=c.execute("SELECT user_id,account,SUM(likes) total FROM registrations WHERE status='APROVADO' AND reviewed>=? GROUP BY user_id,account ORDER BY total DESC LIMIT 3",(monday.isoformat(timespec="seconds"),)).fetchall()
+        views=c.execute("SELECT user_id,account,SUM(views) total FROM registrations WHERE status='APROVADO' AND created>=? AND created<? GROUP BY user_id,account ORDER BY total DESC LIMIT 3",(monday.isoformat(timespec="seconds"),next_monday.isoformat(timespec="seconds"))).fetchall()
+        likes=c.execute("SELECT user_id,account,SUM(likes) total FROM registrations WHERE status='APROVADO' AND created>=? AND created<? GROUP BY user_id,account ORDER BY total DESC LIMIT 3",(monday.isoformat(timespec="seconds"),next_monday.isoformat(timespec="seconds"))).fetchall()
     def lines(rows):
         return "\n".join(f"**{n}.** <@{r['user_id']}> — **{r['total']:,}** ({r['account']})" for n,r in enumerate(rows,1)) or "Ainda não há vídeos aprovados nesta semana."
     layout=discord.ui.LayoutView(timeout=None)
@@ -353,7 +354,7 @@ async def ranking_semanal(i:discord.Interaction):
         discord.ui.TextDisplay("## 👁️ Top 3 • Visualizações\n"+lines(views)),
         discord.ui.Separator(),
         discord.ui.TextDisplay("## ❤️ Top 3 • Curtidas\n"+lines(likes)),
-        discord.ui.TextDisplay("-# Somente cadastros de vídeos aprovados entram na classificação."),
+        discord.ui.TextDisplay("-# ATENÇÃO: só contam registros feitos nesta semana (segunda a domingo). A regra vale para vídeos, LIVES e demais atividades; registros de semanas anteriores não entram nesta contagem."),
         accent_colour=0x9167FF))
     await i.response.send_message(view=layout)
 @bot.tree.command(name="registrar_logs",description="Envia números e comprovante para análise.")
@@ -377,7 +378,7 @@ async def registrar_logs(i:discord.Interaction,roblox_nick:app_commands.Range[st
         cur=c.execute("INSERT INTO registrations(user_id,roblox,account,views,likes,followers,logs,proof_url,proof_hash,proof_type,flags,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(i.user.id,roblox_nick,conta_social,views,curtidas,seguidores,total,url,proof_hash,proof_type,json.dumps(flags,ensure_ascii=False),now()))
         rid=cur.lastrowid
         if proof_hash: c.execute("INSERT OR IGNORE INTO proof_hashes VALUES(?,?,?,?)",(proof_hash,rid,i.user.id,now()))
-    await i.response.send_message(f"Cadastro #{rid} enviado! Cálculo: {total} LOGS. Status: PENDENTE; o saldo só entra após aprovação.",ephemeral=True)
+    await i.response.send_message(f"Cadastro #{rid} enviado! Cálculo: {total} LOGS. Status: PENDENTE; o saldo só entra após aprovação.\n\n📅 Aviso: para as contagens semanais, só entram registros feitos nesta semana (segunda a domingo).",ephemeral=True)
     await post_review(bot,rid); await audit(i.guild,f"📥 Novo cadastro #{rid} enviado por {i.user.mention}.")
 @bot.tree.command(name="carteira",description="Consulta seu saldo de LOGS.")
 async def carteira(i): await i.response.send_message(f"Sua carteira: **{balance(i.user.id)} LOGS**.",ephemeral=True)
