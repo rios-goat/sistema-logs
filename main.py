@@ -62,10 +62,22 @@ def approve(rid,actor,reason):
     return True,f"Cadastro #{rid} aprovado: {r['logs']} LOGS creditados. Saldo: {b}.",r["user_id"],r["logs"]
 def reject(rid,actor,reason):
     with db() as c:
-        c.execute("BEGIN IMMEDIATE"); r=c.execute("SELECT * FROM registrations WHERE id=?",(rid,)).fetchone()
+        c.execute("BEGIN IMMEDIATE")
+        r=c.execute("SELECT * FROM registrations WHERE id=?",(rid,)).fetchone()
         if not r: return False,"Cadastro não encontrado.",None,None
         if r["status"]!="PENDENTE": return False,"Esse cadastro já foi analisado.",None,None
-        c.execute("UPDATE registrations SET status='REPROVADO',reviewer=?,reason=?,reviewed=? WHERE id=?",(actor,reason,nasync def notify_member(bot,rid,approved,reason,logs):
+        c.execute("UPDATE registrations SET status='REPROVADO',reviewer=?,reason=?,reviewed=? WHERE id=?",(actor,reason,now(),rid))
+    return True,f"Cadastro #{rid} reprovado.",r["user_id"],0
+
+async def audit(guild,message):
+    if not AUDIT_ID: return
+    try:
+        channel=(guild.get_channel(AUDIT_ID) if guild else None) or await bot.fetch_channel(AUDIT_ID)
+        await channel.send(message)
+    except Exception:
+        log.exception("Falha ao registrar auditoria.")
+
+async def notify_member(bot,rid,approved,reason,logs):
     r=registration(rid)
     if not r: return
     try:
@@ -149,11 +161,6 @@ class MemberDecisionView(discord.ui.LayoutView):
         async def callback(i): await i.response.send_modal(MemberReplyModal(rid))
         button.callback=callback
         self.add_item(discord.ui.Container(discord.ui.TextDisplay(heading or f"## Resultado do cadastro #{rid}"),discord.ui.Separator(),discord.ui.TextDisplay(detail or "Use o botão abaixo para responder."),discord.ui.ActionRow(button),accent_colour=0x9167FF))
-=reject(self.rid,i.user.id,"Reprovado pela equipe no painel.")
-        await i.response.send_message(msg,ephemeral=True)
-        if ok:
-            for x in self.children: x.disabled=True
-            await i.message.edit(view=self)
 class Bot(commands.Bot):
     async def setup_hook(self):
         init_db()
