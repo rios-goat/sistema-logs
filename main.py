@@ -21,14 +21,14 @@ def init_db():
         c.executescript("""
         CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY,v INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS wallets(user_id INTEGER PRIMARY KEY,balance INTEGER NOT NULL CHECK(balance>=0),updated TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS registrations(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,roblox TEXT NOT NULL,account TEXT NOT NULL,views INTEGER NOT NULL,likes INTEGER NOT NULL,followers INTEGER NOT NULL,logs INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'PENDENTE',proof_url TEXT,proof_hash TEXT,flags TEXT NOT NULL DEFAULT '[]',reviewer INTEGER,reason TEXT,created TEXT NOT NULL,reviewed TEXT);
+        CREATE TABLE IF NOT EXISTS registrations(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,roblox TEXT NOT NULL,account TEXT NOT NULL,views INTEGER NOT NULL,likes INTEGER NOT NULL,followers INTEGER NOT NULL,logs INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'PENDENTE',proof_url TEXT,proof_hash TEXT,proof_type TEXT,flags TEXT NOT NULL DEFAULT '[]',reviewer INTEGER,reason TEXT,created TEXT NOT NULL,reviewed TEXT);
         CREATE TABLE IF NOT EXISTS movements(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,amount INTEGER NOT NULL,balance_after INTEGER NOT NULL,kind TEXT NOT NULL,reason TEXT NOT NULL,actor INTEGER NOT NULL,registration_id INTEGER,created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS proof_hashes(hash TEXT PRIMARY KEY,registration_id INTEGER NOT NULL,user_id INTEGER NOT NULL,created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS member_responses(id INTEGER PRIMARY KEY AUTOINCREMENT,registration_id INTEGER NOT NULL,user_id INTEGER NOT NULL,response TEXT NOT NULL,created TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS reg_user ON registrations(user_id,id);
         CREATE INDEX IF NOT EXISTS mov_user ON movements(user_id,id);
         """)
-        defaults={"views_unit":20,"views_logs":1,"likes_unit":100,"likes_logs":20,"followers_unit":100,"followers_logs":1}
+        cols={row[1] for row in c.execute("PRAGMA table_info(registrations)")}\n        if "proof_type" not in cols: c.execute("ALTER TABLE registrations ADD COLUMN proof_type TEXT")\n        defaults={"views_unit":20,"views_logs":1,"likes_unit":100,"likes_logs":20,"followers_unit":100,"followers_logs":1}
         for k,v in defaults.items(): c.execute("INSERT OR IGNORE INTO settings VALUES(?,?)",(k,v))
 def rules():
     with db() as c: return {r["k"]:r["v"] for r in c.execute("SELECT * FROM settings")}
@@ -100,7 +100,7 @@ async def post_review(bot,rid):
     content=f"## 📥 Cadastro de LOGS #{rid}\n**Membro:** <@{r['user_id']}>\n**Roblox:** {r['roblox']}\n**Conta social:** {r['account']}\n**Views:** {r['views']} • **Curtidas:** {r['likes']} • **Seguidores:** {r['followers']}\n**LOGS calculados:** {r['logs']}\n**Alertas:** {' | '.join(flags) if flags else 'Nenhuma duplicidade detectada; confira visualmente.'}"
     if r["proof_url"]: content+=f"\n[📎 Abrir comprovante]({r['proof_url']})"
     content+="\n\n*Alertas automáticos não comprovam fraude. A decisão exige conferência humana.*"
-    await ch.send(view=ReviewView(rid,content))
+    await ch.send(view=ReviewView(rid,content,r["proof_url"],r["proof_type"]))
 class ReviewReasonModal(discord.ui.Modal):
     def __init__(self,rid,approved):
         super().__init__(title="Motivo da aprovação" if approved else "Motivo da reprovação",timeout=300)
@@ -126,7 +126,7 @@ class ReviewView(discord.ui.LayoutView):
         async def yes_cb(i): await i.response.send_modal(ReviewReasonModal(rid,True))
         async def no_cb(i): await i.response.send_modal(ReviewReasonModal(rid,False))
         yes.callback=yes_cb; no.callback=no_cb
-        self.add_item(discord.ui.Container(discord.ui.TextDisplay(content or f"## Revisão do cadastro #{rid}"),discord.ui.Separator(),discord.ui.ActionRow(yes,no),accent_colour=0x9167FF))
+        items=[discord.ui.TextDisplay(content or f"## Revisão do cadastro #{rid}")]\n        media_type=(proof_type or "").lower()\n        image_ext=bool(proof_url and proof_url.split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp")))\n        if proof_url and (media_type.startswith("image/") or image_ext):\n            items.append(discord.ui.MediaGallery(discord.MediaGalleryItem(proof_url,description="Comprovante enviado")))\n        items.extend([discord.ui.Separator(),discord.ui.ActionRow(yes,no)])\n        self.add_item(discord.ui.Container(*items,accent_colour=0x9167FF))
     async def interaction_check(self,i):
         if not i.guild or not i.user.guild_permissions.administrator:
             await i.response.send_message("Somente administradores podem revisar.",ephemeral=True); return False
@@ -189,7 +189,7 @@ async def registrar_logs(i:discord.Interaction,roblox_nick:app_commands.Range[st
     proof_hash=None; url=link_comprovante.strip() if link_comprovante else None
     if comprovante:
         if comprovante.size>8*1024*1024: return await i.response.send_message("Arquivo maior que 8 MB.",ephemeral=True)
-        try: proof_hash=hashlib.sha256(await comprovante.read()).hexdigest(); url=comprovante.url
+        try: proof_hash=hashlib.sha256(await comprovante.read()).hexdigest(); url=comprovante.url; proof_type=comprovante.content_type or ""
         except Exception: return await i.response.send_message("Não consegui ler o arquivo.",ephemeral=True)
     total=calculate(views,curtidas,seguidores); flags=[]
     with db() as c:
@@ -201,7 +201,7 @@ async def registrar_logs(i:discord.Interaction,roblox_nick:app_commands.Range[st
             if old: flags.append(f"Link já usado no cadastro #{old['id']}.")
         if not any((views,curtidas,seguidores)): flags.append("Todos os números estão zerados.")
         if max(views,curtidas,seguidores)>100000000: flags.append("Valor muito alto.")
-        cur=c.execute("INSERT INTO registrations(user_id,roblox,account,views,likes,followers,logs,proof_url,proof_hash,flags,created) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(i.user.id,roblox_nick,conta_social,views,curtidas,seguidores,total,url,proof_hash,json.dumps(flags,ensure_ascii=False),now()))
+        cur=c.execute("INSERT INTO registrations(user_id,roblox,account,views,likes,followers,logs,proof_url,proof_hash,proof_type,flags,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(i.user.id,roblox_nick,conta_social,views,curtidas,seguidores,total,url,proof_hash,proof_type,json.dumps(flags,ensure_ascii=False),now()))
         rid=cur.lastrowid
         if proof_hash: c.execute("INSERT OR IGNORE INTO proof_hashes VALUES(?,?,?,?)",(proof_hash,rid,i.user.id,now()))
     await i.response.send_message(f"Cadastro #{rid} enviado! Cálculo: {total} LOGS. Status: PENDENTE; o saldo só entra após aprovação.",ephemeral=True)
