@@ -399,16 +399,25 @@ async def meus_logs(i):
 async def ranking_logs(i):
     with db() as c: rows=c.execute("SELECT user_id,balance FROM wallets WHERE balance>0 ORDER BY balance DESC LIMIT 10").fetchall()
     await i.response.send_message("🏆 Ranking de LOGS\\n"+("\\n".join(f"{n}. <@{r['user_id']}> — {r['balance']} LOGS" for n,r in enumerate(rows,1)) if rows else "Ainda vazio."))
-@bot.tree.command(name="editar_saldo",description="Adiciona ou define o saldo de um membro.")
+@bot.tree.command(name="editar_saldo",description="Adiciona, remove ou define o saldo de um membro.")
 @admin()
-@app_commands.choices(modo=[app_commands.Choice(name="Adicionar",value="adicionar"),app_commands.Choice(name="Definir",value="definir")])
+@app_commands.choices(modo=[app_commands.Choice(name="Adicionar",value="adicionar"),app_commands.Choice(name="Remover",value="remover"),app_commands.Choice(name="Definir",value="definir")])
 async def editar_saldo(i,membro:discord.Member,quantidade:app_commands.Range[int,0,1000000000],modo:app_commands.Choice[str],motivo:app_commands.Range[str,1,250]):
-    with db() as c:
-        c.execute("BEGIN IMMEDIATE")
-        old=c.execute("SELECT balance FROM wallets WHERE user_id=?",(membro.id,)).fetchone(); before=old["balance"] if old else 0
-        delta=quantidade-before if modo.value=="definir" else quantidade
-        b=movement(c,membro.id,delta,"SALDO_DEFINIDO" if modo.value=="definir" else "SALDO_ADICIONADO",motivo,i.user.id)
-    await i.response.send_message(f"Saldo de {membro.mention}: **{b} LOGS**.",ephemeral=True); await audit(i.guild,f"🛠️ {i.user.mention} ajustou saldo de {membro.mention}. Motivo: {motivo}")
+    try:
+        with db() as c:
+            c.execute("BEGIN IMMEDIATE")
+            old=c.execute("SELECT balance FROM wallets WHERE user_id=?",(membro.id,)).fetchone(); before=old["balance"] if old else 0
+            if modo.value=="definir":
+                delta=quantidade-before; kind="SALDO_DEFINIDO"
+            elif modo.value=="remover":
+                delta=-quantidade; kind="SALDO_REMOVIDO"
+            else:
+                delta=quantidade; kind="SALDO_ADICIONADO"
+            b=movement(c,membro.id,delta,kind,motivo,i.user.id)
+    except ValueError as e:
+        return await i.response.send_message(str(e),ephemeral=True)
+    await i.response.send_message(f"Saldo de {membro.mention}: **{b} LOGS**.",ephemeral=True)
+    await audit(i.guild,f"🛠️ {i.user.mention} usou o modo {modo.value} em {membro.mention}. Quantidade: {quantidade} LOGS. Motivo: {motivo}. Saldo final: {b} LOGS.")
 @bot.tree.command(name="descontar_saldo",description="Desconta LOGS da carteira.")
 @admin()
 async def descontar_saldo(i,membro:discord.Member,quantidade:app_commands.Range[int,1,1000000000],motivo:app_commands.Range[str,1,250]):
