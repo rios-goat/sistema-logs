@@ -24,6 +24,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS registrations(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,roblox TEXT NOT NULL,account TEXT NOT NULL,views INTEGER NOT NULL,likes INTEGER NOT NULL,followers INTEGER NOT NULL,logs INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'PENDENTE',proof_url TEXT,proof_hash TEXT,flags TEXT NOT NULL DEFAULT '[]',reviewer INTEGER,reason TEXT,created TEXT NOT NULL,reviewed TEXT);
         CREATE TABLE IF NOT EXISTS movements(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,amount INTEGER NOT NULL,balance_after INTEGER NOT NULL,kind TEXT NOT NULL,reason TEXT NOT NULL,actor INTEGER NOT NULL,registration_id INTEGER,created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS proof_hashes(hash TEXT PRIMARY KEY,registration_id INTEGER NOT NULL,user_id INTEGER NOT NULL,created TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS member_responses(id INTEGER PRIMARY KEY AUTOINCREMENT,registration_id INTEGER NOT NULL,user_id INTEGER NOT NULL,response TEXT NOT NULL,created TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS reg_user ON registrations(user_id,id);
         CREATE INDEX IF NOT EXISTS mov_user ON movements(user_id,id);
         """)
@@ -49,60 +50,106 @@ def admin():
         if not i.guild or not i.user.guild_permissions.administrator: raise app_commands.CheckFailure("Comando exclusivo para quem tem a permissão nativa Administrador.")
         return True
     return app_commands.check(check)
-def approve(rid,actor):
+def registration(rid):
+    with db() as c: return c.execute("SELECT * FROM registrations WHERE id=?",(rid,)).fetchone()
+def approve(rid,actor,reason):
     with db() as c:
         c.execute("BEGIN IMMEDIATE"); r=c.execute("SELECT * FROM registrations WHERE id=?",(rid,)).fetchone()
-        if not r: return False,"Cadastro não encontrado."
-        if r["status"]!="PENDENTE": return False,"Esse cadastro já foi analisado."
-        b=movement(c,r["user_id"],r["logs"],"CADASTRO_APROVADO",f"Crédito do cadastro #{rid}",actor,rid)
-        c.execute("UPDATE registrations SET status='APROVADO',reviewer=?,reviewed=? WHERE id=?",(actor,now(),rid))
-    return True,f"Cadastro #{rid} aprovado: {r['logs']} LOGS creditados. Saldo: {b}."
+        if not r: return False,"Cadastro não encontrado.",None,None
+        if r["status"]!="PENDENTE": return False,"Esse cadastro já foi analisado.",None,None
+        b=movement(c,r["user_id"],r["logs"],"CADASTRO_APROVADO",f"Cadastro #{rid} aprovado: {reason}",actor,rid)
+        c.execute("UPDATE registrations SET status='APROVADO',reviewer=?,reason=?,reviewed=? WHERE id=?",(actor,reason,now(),rid))
+    return True,f"Cadastro #{rid} aprovado: {r['logs']} LOGS creditados. Saldo: {b}.",r["user_id"],r["logs"]
 def reject(rid,actor,reason):
     with db() as c:
-        c.execute("BEGIN IMMEDIATE"); r=c.execute("SELECT status FROM registrations WHERE id=?",(rid,)).fetchone()
-        if not r: return False,"Cadastro não encontrado."
-        if r["status"]!="PENDENTE": return False,"Esse cadastro já foi analisado."
-        c.execute("UPDATE registrations SET status='REPROVADO',reviewer=?,reason=?,reviewed=? WHERE id=?",(actor,reason,now(),rid))
-    return True,f"Cadastro #{rid} reprovado. Motivo: {reason}"
-async def audit(guild,msg):
-    if AUDIT_ID and guild:
-        ch=guild.get_channel(AUDIT_ID)
-        if ch: await ch.send(msg[:1900])
+        c.execute("BEGIN IMMEDIATE"); r=c.execute("SELECT * FROM registrations WHERE id=?",(rid,)).fetchone()
+        if not r: return False,"Cadastro não encontrado.",None,None
+        if r["status"]!="PENDENTE": return False,"Esse cadastro já foi analisado.",None,None
+        c.execute("UPDATE registrations SET status='REPROVADO',reviewer=?,reason=?,reviewed=? WHERE id=?",(actor,reason,nasync def notify_member(bot,rid,approved,reason,logs):
+    r=registration(rid)
+    if not r: return
+    try:
+        user=bot.get_user(r["user_id"]) or await bot.fetch_user(r["user_id"])
+        heading="## ✅ Seus LOGS foram aprovados!" if approved else "## ❌ Seu cadastro de LOGS foi reprovado"
+        detail=f"**Cadastro:** #{rid}\n**Resultado:** {'Aprovado' if approved else 'Reprovado'}\n**LOGS creditados:** {logs if approved else 0}\n**Motivo/observação da equipe:** {reason}\n\nSe quiser contestar ou explicar algo, use o botão abaixo."
+        await user.send(view=MemberDecisionView(rid,heading,detail))
+    except discord.Forbidden:
+        log.warning("Não foi possível enviar DM ao usuário %s (mensagens privadas fechadas).",r["user_id"])
+    except Exception:
+        log.exception("Falha ao enviar resultado por DM.")
 async def post_review(bot,rid):
-    with db() as c: r=c.execute("SELECT * FROM registrations WHERE id=?",(rid,)).fetchone()
+    r=registration(rid)
     if not r or not REVIEW_ID: return
     ch=bot.get_channel(REVIEW_ID)
     if not ch:
         try: ch=await bot.fetch_channel(REVIEW_ID)
         except Exception: log.exception("Canal de análise indisponível"); return
     flags=json.loads(r["flags"])
-    e=discord.Embed(title=f"Cadastro de LOGS #{rid}",color=discord.Color.orange())
-    e.add_field(name="Membro",value=f"<@{r['user_id']}>",inline=False)
-    e.add_field(name="Roblox / Conta",value=f"{r['roblox']} / {r['account']}",inline=False)
-    e.add_field(name="Views / Curtidas / Seguidores",value=f"{r['views']} / {r['likes']} / {r['followers']}",inline=False)
-    e.add_field(name="LOGS calculados",value=str(r["logs"]))
-    e.add_field(name="Alertas automáticos",value="\\n".join(flags) if flags else "Nenhuma duplicidade detectada; confira visualmente.",inline=False)
-    if r["proof_url"]: e.add_field(name="Comprovante",value=f"[Abrir comprovante]({r['proof_url']})",inline=False)
-    e.set_footer(text="Alertas não provam fraude. A decisão exige conferência humana.")
-    await ch.send(embed=e,view=ReviewView(rid))
-class ReviewView(discord.ui.View):
-    def __init__(self,rid):
-        super().__init__(timeout=None); self.rid=rid
-        self.children[0].custom_id=f"logs:approve:{rid}"
-        self.children[1].custom_id=f"logs:reject:{rid}"
+    content=f"## 📥 Cadastro de LOGS #{rid}\n**Membro:** <@{r['user_id']}>\n**Roblox:** {r['roblox']}\n**Conta social:** {r['account']}\n**Views:** {r['views']} • **Curtidas:** {r['likes']} • **Seguidores:** {r['followers']}\n**LOGS calculados:** {r['logs']}\n**Alertas:** {' | '.join(flags) if flags else 'Nenhuma duplicidade detectada; confira visualmente.'}"
+    if r["proof_url"]: content+=f"\n[📎 Abrir comprovante]({r['proof_url']})"
+    content+="\n\n*Alertas automáticos não comprovam fraude. A decisão exige conferência humana.*"
+    await ch.send(view=ReviewView(rid,content))
+class ReviewReasonModal(discord.ui.Modal):
+    def __init__(self,rid,approved):
+        super().__init__(title="Motivo da aprovação" if approved else "Motivo da reprovação",timeout=300)
+        self.rid=rid; self.approved=approved
+        self.reason=discord.ui.TextInput(label="Motivo / observação",placeholder="Explique a decisão para o membro...",style=discord.TextStyle.paragraph,min_length=3,max_length=500,required=True)
+        self.add_item(self.reason)
+    async def on_submit(self,i):
+        reason=str(self.reason.value).strip()
+        if self.approved: ok,msg,uid,logs=approve(self.rid,i.user.id,reason)
+        else: ok,msg,uid,logs=reject(self.rid,i.user.id,reason)
+        await i.response.send_message(msg,ephemeral=True)
+        if ok:
+            await notify_member(i.client,self.rid,self.approved,reason,logs)
+            await audit(i.guild,f"{'✅ Aprovado' if self.approved else '❌ Reprovado'}: cadastro #{self.rid}, membro <@{uid}>. Responsável: {i.user.mention}. Motivo: {reason}")
+            if i.message:
+                try: await i.message.edit(view=None)
+                except Exception: log.exception("Não foi possível atualizar painel de análise.")
+class ReviewView(discord.ui.LayoutView):
+    def __init__(self,rid,content=None):
+        super().__init__(timeout=None)
+        yes=discord.ui.Button(label="Aprovar",style=discord.ButtonStyle.success,custom_id=f"logs:approve:{rid}")
+        no=discord.ui.Button(label="Reprovar",style=discord.ButtonStyle.danger,custom_id=f"logs:reject:{rid}")
+        async def yes_cb(i): await i.response.send_modal(ReviewReasonModal(rid,True))
+        async def no_cb(i): await i.response.send_modal(ReviewReasonModal(rid,False))
+        yes.callback=yes_cb; no.callback=no_cb
+        self.add_item(discord.ui.Container(discord.ui.TextDisplay(content or f"## Revisão do cadastro #{rid}"),discord.ui.Separator(),discord.ui.ActionRow(yes,no),accent_colour=0x9167FF))
     async def interaction_check(self,i):
         if not i.guild or not i.user.guild_permissions.administrator:
             await i.response.send_message("Somente administradores podem revisar.",ephemeral=True); return False
         return True
-    @discord.ui.button(label="Aprovar e creditar",style=discord.ButtonStyle.success)
-    async def approve_button(self,i,b):
-        ok,msg=approve(self.rid,i.user.id); await i.response.send_message(msg,ephemeral=True)
-        if ok:
-            for x in self.children: x.disabled=True
-            await i.message.edit(view=self)
-    @discord.ui.button(label="Reprovar",style=discord.ButtonStyle.danger)
-    async def reject_button(self,i,b):
-        ok,msg=reject(self.rid,i.user.id,"Reprovado pela equipe no painel.")
+class MemberReplyModal(discord.ui.Modal):
+    def __init__(self,rid):
+        super().__init__(title=f"Resposta ao cadastro #{rid}",timeout=600); self.rid=rid
+        self.reply=discord.ui.TextInput(label="Sua resposta",placeholder="Escreva sua explicação ou contestação...",style=discord.TextStyle.paragraph,min_length=3,max_length=1000,required=True)
+        self.add_item(self.reply)
+    async def on_submit(self,i):
+        r=registration(self.rid)
+        if not r or r["user_id"]!=i.user.id:
+            return await i.response.send_message("Este cadastro não pertence a você.",ephemeral=True)
+        answer=str(self.reply.value).strip()
+        with db() as c: c.execute("INSERT INTO member_responses(registration_id,user_id,response,created) VALUES(?,?,?,?)",(self.rid,i.user.id,answer,now()))
+        await i.response.send_message("Sua resposta foi enviada à equipe para análise.",ephemeral=True)
+        notice=f"## 📨 Contestação do cadastro #{self.rid}\n**Membro:** <@{i.user.id}>\n**Resposta:** {answer}"
+        for channel_id in (REVIEW_ID,AUDIT_ID):
+            if channel_id:
+                try:
+                    ch=i.client.get_channel(channel_id) or await i.client.fetch_channel(channel_id)
+                    await ch.send(view=SimpleNoticeView(notice))
+                except Exception: log.exception("Falha ao encaminhar resposta do membro.")
+class SimpleNoticeView(discord.ui.LayoutView):
+    def __init__(self,message):
+        super().__init__(timeout=None)
+        self.add_item(discord.ui.Container(discord.ui.TextDisplay(message),accent_colour=0x3498DB))
+class MemberDecisionView(discord.ui.LayoutView):
+    def __init__(self,rid,heading=None,detail=None):
+        super().__init__(timeout=None)
+        button=discord.ui.Button(label="Responder à decisão",style=discord.ButtonStyle.primary,custom_id=f"logs:reply:{rid}")
+        async def callback(i): await i.response.send_modal(MemberReplyModal(rid))
+        button.callback=callback
+        self.add_item(discord.ui.Container(discord.ui.TextDisplay(heading or f"## Resultado do cadastro #{rid}"),discord.ui.Separator(),discord.ui.TextDisplay(detail or "Use o botão abaixo para responder."),discord.ui.ActionRow(button),accent_colour=0x9167FF))
+=reject(self.rid,i.user.id,"Reprovado pela equipe no painel.")
         await i.response.send_message(msg,ephemeral=True)
         if ok:
             for x in self.children: x.disabled=True
@@ -110,8 +157,11 @@ class ReviewView(discord.ui.View):
 class Bot(commands.Bot):
     async def setup_hook(self):
         init_db()
-        with db() as c: ids=[x["id"] for x in c.execute("SELECT id FROM registrations WHERE status='PENDENTE'")]
-        for rid in ids: self.add_view(ReviewView(rid))
+        with db() as c:
+            pending=[x["id"] for x in c.execute("SELECT id FROM registrations WHERE status='PENDENTE'")]
+            reviewed=[x["id"] for x in c.execute("SELECT id FROM registrations WHERE status IN ('APROVADO','REPROVADO')")]
+        for rid in pending: self.add_view(ReviewView(rid))
+        for rid in reviewed: self.add_view(MemberDecisionView(rid))
         await self.tree.sync()
 intents=discord.Intents.default()
 bot=Bot(command_prefix="!",intents=intents)
@@ -198,13 +248,17 @@ async def analisar_logs(i,cadastro_id:app_commands.Range[int,1,2147483647]):
     await i.response.send_message(embed=e,ephemeral=True)
 @bot.tree.command(name="aprovar_logs",description="Aprova cadastro e credita a carteira.")
 @admin()
-async def aprovar_logs(i,cadastro_id:app_commands.Range[int,1,2147483647]):
-    ok,msg=approve(cadastro_id,i.user.id); await i.response.send_message(msg,ephemeral=True)
-    if ok: await audit(i.guild,f"✅ {i.user.mention} aprovou cadastro #{cadastro_id}.")
+async def aprovar_logs(i,cadastro_id:app_commands.Range[int,1,2147483647],motivo:app_commands.Range[str,3,500]):
+    ok,msg,uid,logs=approve(cadastro_id,i.user.id,motivo); await i.response.send_message(msg,ephemeral=True)
+    if ok:
+        await notify_member(bot,cadastro_id,True,motivo,logs)
+        await audit(i.guild,f"✅ {i.user.mention} aprovou cadastro #{cadastro_id}. Motivo: {motivo}")
 @bot.tree.command(name="reprovar_logs",description="Reprova cadastro com motivo.")
 @admin()
-async def reprovar_logs(i,cadastro_id:app_commands.Range[int,1,2147483647],motivo:app_commands.Range[str,1,250]):
-    ok,msg=reject(cadastro_id,i.user.id,motivo); await i.response.send_message(msg,ephemeral=True)
-    if ok: await audit(i.guild,f"❌ {i.user.mention} reprovou cadastro #{cadastro_id}: {motivo}")
+async def reprovar_logs(i,cadastro_id:app_commands.Range[int,1,2147483647],motivo:app_commands.Range[str,3,500]):
+    ok,msg,uid,logs=reject(cadastro_id,i.user.id,motivo); await i.response.send_message(msg,ephemeral=True)
+    if ok:
+        await notify_member(bot,cadastro_id,False,motivo,logs)
+        await audit(i.guild,f"❌ {i.user.mention} reprovou cadastro #{cadastro_id}: {motivo}")
 if not TOKEN: raise RuntimeError("Configure DISCORD_TOKEN nas variáveis de ambiente.")
 bot.run(TOKEN)
