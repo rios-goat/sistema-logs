@@ -75,7 +75,10 @@ async def audit(guild,message):
     if not AUDIT_ID: return
     try:
         channel=(guild.get_channel(AUDIT_ID) if guild else None) or await bot.fetch_channel(AUDIT_ID)
-        await channel.send(message)
+        embed=discord.Embed(description=message,color=0x9167FF,timestamp=datetime.now(timezone.utc))
+        embed.set_author(name="Sistema de LOGS • Auditoria")
+        embed.set_footer(text="Registro automático")
+        await channel.send(embed=embed)
     except Exception:
         log.exception("Falha ao registrar auditoria.")
 
@@ -99,9 +102,17 @@ async def post_review(bot,rid):
         try: ch=await bot.fetch_channel(REVIEW_ID)
         except Exception: log.exception("Canal de análise indisponível"); return
     flags=json.loads(r["flags"])
-    content=f"## 📥 Cadastro de LOGS #{rid}\n**Membro:** <@{r['user_id']}>\n**Roblox:** {r['roblox']}\n**Conta social:** {r['account']}\n**Views:** {r['views']} • **Curtidas:** {r['likes']} • **Seguidores:** {r['followers']}\n**LOGS calculados:** {r['logs']}\n**Alertas:** {' | '.join(flags) if flags else 'Nenhuma duplicidade detectada; confira visualmente.'}"
-    content+="\n\n*Alertas automáticos não comprovam fraude. A decisão exige conferência humana.*"
-    await ch.send(view=ReviewView(rid,content,r["proof_url"],r["proof_type"]))
+    embed=discord.Embed(title=f"📥 Cadastro de LOGS #{rid}",color=0x9167FF,timestamp=datetime.now(timezone.utc))
+    embed.description=f"**Membro:** <@{r['user_id']}>\n**Roblox:** {r['roblox']}\n**Conta social:** {r['account']}"
+    embed.add_field(name="📊 Estatísticas",value=f"👁️ **Views:** {r['views']:,}\n❤️ **Curtidas:** {r['likes']:,}\n👥 **Seguidores:** {r['followers']:,}",inline=True)
+    embed.add_field(name="💰 Resultado",value=f"**{r['logs']} LOGS**",inline=True)
+    embed.add_field(name="🛡️ Verificação",value="\n".join(f"• {flag}" for flag in flags) if flags else "✅ Nenhuma duplicidade detectada.\nA conferência visual continua necessária.",inline=False)
+    media_type=(r["proof_type"] or "").lower()
+    image_ext=bool(r["proof_url"] and r["proof_url"].split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp")))
+    is_image=bool(r["proof_url"] and (media_type.startswith("image/") or image_ext))
+    if is_image: embed.set_image(url=r["proof_url"])
+    embed.set_footer(text="Sistema de LOGS • A decisão exige conferência humana")
+    await ch.send(embed=embed,view=ReviewView(rid,r["proof_url"],is_image))
 class ReviewReasonModal(discord.ui.Modal):
     def __init__(self,rid,approved):
         super().__init__(title="Motivo da aprovação" if approved else "Motivo da reprovação",timeout=300)
@@ -119,26 +130,17 @@ class ReviewReasonModal(discord.ui.Modal):
             if i.message:
                 try: await i.message.edit(view=None)
                 except Exception: log.exception("Não foi possível atualizar painel de análise.")
-class ReviewView(discord.ui.LayoutView):
-    def __init__(self,rid,content=None,proof_url=None,proof_type=None):
+class ReviewView(discord.ui.View):
+    def __init__(self,rid,proof_url=None,is_image=False):
         super().__init__(timeout=None)
-        yes=discord.ui.Button(label="Aprovar",style=discord.ButtonStyle.success,custom_id=f"logs:approve:{rid}")
-        no=discord.ui.Button(label="Reprovar",style=discord.ButtonStyle.danger,custom_id=f"logs:reject:{rid}")
+        yes=discord.ui.Button(label="Aprovar",style=discord.ButtonStyle.success,custom_id=f"logs:approve:{rid}",emoji="✅")
+        no=discord.ui.Button(label="Reprovar",style=discord.ButtonStyle.danger,custom_id=f"logs:reject:{rid}",emoji="❌")
         async def yes_cb(i): await i.response.send_modal(ReviewReasonModal(rid,True))
         async def no_cb(i): await i.response.send_modal(ReviewReasonModal(rid,False))
         yes.callback=yes_cb; no.callback=no_cb
-        items=[discord.ui.TextDisplay(content or f"## Revisão do cadastro #{rid}")]
-        media_type=(proof_type or "").lower()
-        image_ext=bool(proof_url and proof_url.split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp")))
-        is_image=bool(proof_url and (media_type.startswith("image/") or image_ext))
-        if is_image:
-            items.append(discord.ui.MediaGallery(discord.MediaGalleryItem(proof_url,description="Comprovante enviado")))
-        items.append(discord.ui.Separator())
-        buttons=[yes,no]
+        self.add_item(yes); self.add_item(no)
         if proof_url and not is_image:
-            buttons.append(discord.ui.Button(label="Abrir comprovante",style=discord.ButtonStyle.link,url=proof_url))
-        items.append(discord.ui.ActionRow(*buttons))
-        self.add_item(discord.ui.Container(*items,accent_colour=0x9167FF))
+            self.add_item(discord.ui.Button(label="Abrir comprovante",style=discord.ButtonStyle.link,url=proof_url,emoji="📎"))
     async def interaction_check(self,i):
         if not i.guild or not i.user.guild_permissions.administrator:
             await i.response.send_message("Somente administradores podem revisar.",ephemeral=True); return False
@@ -262,8 +264,17 @@ async def historico_logs(i):
 async def analisar_logs(i,cadastro_id:app_commands.Range[int,1,2147483647]):
     with db() as c: r=c.execute("SELECT * FROM registrations WHERE id=?",(cadastro_id,)).fetchone()
     if not r: return await i.response.send_message("Cadastro não encontrado.",ephemeral=True)
-    e=discord.Embed(title=f"Análise #{cadastro_id}",description=f"Membro: <@{r['user_id']}>\\nRoblox: {r['roblox']}\\nConta: {r['account']}\\nViews/curtidas/seguidores: {r['views']}/{r['likes']}/{r['followers']}\\nCálculo: {r['logs']} LOGS\\nStatus: {r['status']}\\nAlertas: "+(" | ".join(json.loads(r["flags"])) or "Nenhum alerta automático; confira visualmente."))
-    if r["proof_url"]: e.add_field(name="Comprovante",value=f"[Abrir]({r['proof_url']})")
+    e=discord.Embed(title=f"🔎 Análise do cadastro #{cadastro_id}",color=0x9167FF,timestamp=datetime.now(timezone.utc))
+    e.description=f"**Membro:** <@{r['user_id']}>\n**Roblox:** {r['roblox']}\n**Conta social:** {r['account']}"
+    e.add_field(name="📊 Estatísticas",value=f"👁️ Views: **{r['views']:,}**\n❤️ Curtidas: **{r['likes']:,}**\n👥 Seguidores: **{r['followers']:,}**",inline=True)
+    e.add_field(name="💰 Resultado",value=f"**{r['logs']} LOGS**\n**Status:** {r['status']}",inline=True)
+    flags=json.loads(r["flags"])
+    e.add_field(name="🛡️ Alertas",value="\n".join(f"• {flag}" for flag in flags) if flags else "✅ Nenhum alerta automático; confira visualmente.",inline=False)
+    media_type=(r["proof_type"] or "").lower()
+    image_ext=bool(r["proof_url"] and r["proof_url"].split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp")))
+    if r["proof_url"] and (media_type.startswith("image/") or image_ext): e.set_image(url=r["proof_url"])
+    elif r["proof_url"]: e.add_field(name="📎 Comprovante",value=f"[Abrir comprovante]({r['proof_url']})",inline=False)
+    e.set_footer(text="Sistema de LOGS • Análise administrativa")
     await i.response.send_message(embed=e,ephemeral=True)
 @bot.tree.command(name="aprovar_logs",description="Aprova cadastro e credita a carteira.")
 @admin()
