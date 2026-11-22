@@ -295,20 +295,28 @@ async def on_ready(): log.info("Conectado como %s",bot.user)
 
 @bot.tree.command(name="atualizar_conta",description="Configura as regras de conversão de LOGS.")
 @admin()
-async def atualizar_conta(i:discord.Interaction,views_unidade:app_commands.Range[int,1,100000000],views_logs:app_commands.Range[int,0,1000000],curtidas_unidade:app_commands.Range[int,1,100000000],curtidas_logs:app_commands.Range[int,0,1000000],seguidores_unidade:app_commands.Range[int,1,100000000],seguidores_logs:app_commands.Range[int,0,1000000]):
+async def atualizar_conta(i:discord.Interaction,views_unidade:app_commands.Range[int,1,100000000]=None,views_logs:app_commands.Range[int,0,1000000]=None,curtidas_unidade:app_commands.Range[int,1,100000000]=None,curtidas_logs:app_commands.Range[int,0,1000000]=None,seguidores_unidade:app_commands.Range[int,1,100000000]=None,seguidores_logs:app_commands.Range[int,0,1000000]=None):
     vals={"views_unit":views_unidade,"views_logs":views_logs,"likes_unit":curtidas_unidade,"likes_logs":curtidas_logs,"followers_unit":seguidores_unidade,"followers_logs":seguidores_logs}
+    vals={k:v for k,v in vals.items() if v is not None}
+    if not vals: return await i.response.send_message("Informe pelo menos um campo para atualizar. Os demais podem ficar vazios.",ephemeral=True)
     with db() as c:
         for k,v in vals.items(): c.execute("INSERT INTO settings VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",(k,v))
-    await i.response.send_message(f"Regras salvas: {views_unidade} views = {views_logs} LOGS; {curtidas_unidade} curtidas = {curtidas_logs} LOGS; {seguidores_unidade} seguidores = {seguidores_logs} LOGS.",ephemeral=True)
-    await audit(i.guild,f"⚙️ {i.user.mention} atualizou as regras.")
+    current=rules()
+    summary=f"👁️ Views: {current['views_unit']} = {current['views_logs']} LOGS\n❤️ Curtidas: {current['likes_unit']} = {current['likes_logs']} LOGS\n👥 Seguidores: {current['followers_unit']} = {current['followers_logs']} LOGS"
+    await i.response.send_message("✅ **Regras de vídeos atualizadas parcialmente.**\n"+summary,ephemeral=True)
+    await audit(i.guild,f"⚙️ {i.user.mention} atualizou parcialmente as regras de conversão de vídeos.")
 @bot.tree.command(name="editar_conta_live",description="Configura as regras de conversão das LIVES.")
 @admin()
-async def editar_conta_live(i:discord.Interaction,views_unidade:app_commands.Range[int,1,100000000],views_logs:app_commands.Range[int,0,1000000],curtidas_unidade:app_commands.Range[int,1,100000000],curtidas_logs:app_commands.Range[int,0,1000000]):
+async def editar_conta_live(i:discord.Interaction,views_unidade:app_commands.Range[int,1,100000000]=None,views_logs:app_commands.Range[int,0,1000000]=None,curtidas_unidade:app_commands.Range[int,1,100000000]=None,curtidas_logs:app_commands.Range[int,0,1000000]=None):
     vals={"live_views_unit":views_unidade,"live_views_logs":views_logs,"live_likes_unit":curtidas_unidade,"live_likes_logs":curtidas_logs}
+    vals={k:v for k,v in vals.items() if v is not None}
+    if not vals: return await i.response.send_message("Informe pelo menos um campo para atualizar. Os demais podem ficar vazios.",ephemeral=True)
     with db() as c:
         for k,v in vals.items(): c.execute("INSERT INTO settings VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",(k,v))
-    await i.response.send_message(f"Regras LIVE salvas: {views_unidade} views = {views_logs} LOGS; {curtidas_unidade} curtidas = {curtidas_logs} LOGS.",ephemeral=True)
-    await audit(i.guild,f"⚙️ {i.user.mention} atualizou as regras de conversão LIVE.")
+    current=rules()
+    summary=f"👁️ Views: {current['live_views_unit']} = {current['live_views_logs']} LOGS\n❤️ Curtidas: {current['live_likes_unit']} = {current['live_likes_logs']} LOGS"
+    await i.response.send_message("✅ **Regras de LIVES atualizadas parcialmente.**\n"+summary,ephemeral=True)
+    await audit(i.guild,f"⚙️ {i.user.mention} atualizou parcialmente as regras de conversão LIVE.")
 @bot.tree.command(name="registrar_logs_live",description="Envia uma LIVE para análise e cálculo de LOGS.")
 async def registrar_logs_live(i:discord.Interaction,nickroblox:app_commands.Range[str,1,80],nickdiscord:app_commands.Range[str,1,80],cargonocomex:app_commands.Range[str,1,100],viewsdalive:app_commands.Range[int,0,100000000],curtidas:app_commands.Range[int,0,100000000],comprovacao:discord.Attachment):
     if comprovacao.size>8*1024*1024: return await i.response.send_message("Comprovação maior que 8 MB.",ephemeral=True)
