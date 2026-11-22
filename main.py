@@ -100,7 +100,6 @@ async def post_review(bot,rid):
         except Exception: log.exception("Canal de análise indisponível"); return
     flags=json.loads(r["flags"])
     content=f"## 📥 Cadastro de LOGS #{rid}\n**Membro:** <@{r['user_id']}>\n**Roblox:** {r['roblox']}\n**Conta social:** {r['account']}\n**Views:** {r['views']} • **Curtidas:** {r['likes']} • **Seguidores:** {r['followers']}\n**LOGS calculados:** {r['logs']}\n**Alertas:** {' | '.join(flags) if flags else 'Nenhuma duplicidade detectada; confira visualmente.'}"
-    if r["proof_url"]: content+=f"\n[📎 Abrir comprovante]({r['proof_url']})"
     content+="\n\n*Alertas automáticos não comprovam fraude. A decisão exige conferência humana.*"
     await ch.send(view=ReviewView(rid,content,r["proof_url"],r["proof_type"]))
 class ReviewReasonModal(discord.ui.Modal):
@@ -131,9 +130,14 @@ class ReviewView(discord.ui.LayoutView):
         items=[discord.ui.TextDisplay(content or f"## Revisão do cadastro #{rid}")]
         media_type=(proof_type or "").lower()
         image_ext=bool(proof_url and proof_url.split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp")))
-        if proof_url and (media_type.startswith("image/") or image_ext):
+        is_image=bool(proof_url and (media_type.startswith("image/") or image_ext))
+        if is_image:
             items.append(discord.ui.MediaGallery(discord.MediaGalleryItem(proof_url,description="Comprovante enviado")))
-        items.extend([discord.ui.Separator(),discord.ui.ActionRow(yes,no)])
+        items.append(discord.ui.Separator())
+        buttons=[yes,no]
+        if proof_url and not is_image:
+            buttons.append(discord.ui.Button(label="Abrir comprovante",style=discord.ButtonStyle.link,url=proof_url))
+        items.append(discord.ui.ActionRow(*buttons))
         self.add_item(discord.ui.Container(*items,accent_colour=0x9167FF))
     async def interaction_check(self,i):
         if not i.guild or not i.user.guild_permissions.administrator:
