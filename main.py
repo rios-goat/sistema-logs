@@ -39,8 +39,13 @@ def init_db():
         """)
         cols={row[1] for row in c.execute("PRAGMA table_info(registrations)")}
         if "proof_type" not in cols: c.execute("ALTER TABLE registrations ADD COLUMN proof_type TEXT")
-        defaults={"views_unit":20,"views_logs":1,"likes_unit":100,"likes_logs":20,"followers_unit":100,"followers_logs":1,"live_views_unit":20,"live_views_logs":1,"live_likes_unit":100,"live_likes_logs":20}
+        defaults={"views_unit":20,"views_logs":1,"likes_unit":5,"likes_logs":1,"followers_unit":100,"followers_logs":1,"live_views_unit":20,"live_views_logs":1,"live_likes_unit":100,"live_likes_logs":20}
         for k,v in defaults.items(): c.execute("INSERT OR IGNORE INTO settings VALUES(?,?)",(k,v))
+        # Migração única: atualiza instalações existentes para 5 curtidas = 1 LOG.
+        if not c.execute("SELECT 1 FROM settings WHERE k='likes_rule_v2'").fetchone():
+            c.execute("INSERT INTO settings(k,v) VALUES('likes_unit',5) ON CONFLICT(k) DO UPDATE SET v=5")
+            c.execute("INSERT INTO settings(k,v) VALUES('likes_logs',1) ON CONFLICT(k) DO UPDATE SET v=1")
+            c.execute("INSERT INTO settings(k,v) VALUES('likes_rule_v2',1)")
 def rules():
     with db() as c: return {r["k"]:r["v"] for r in c.execute("SELECT * FROM settings")}
 def calculate(v,l,f):
