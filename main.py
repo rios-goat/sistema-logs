@@ -345,14 +345,14 @@ async def ranking_semanal(i:discord.Interaction):
         views=c.execute("SELECT user_id,account,SUM(views) total FROM registrations WHERE status='APROVADO' AND reviewed>=? GROUP BY user_id,account ORDER BY total DESC LIMIT 3",(monday.isoformat(timespec="seconds"),)).fetchall()
         likes=c.execute("SELECT user_id,account,SUM(likes) total FROM registrations WHERE status='APROVADO' AND reviewed>=? GROUP BY user_id,account ORDER BY total DESC LIMIT 3",(monday.isoformat(timespec="seconds"),)).fetchall()
     def lines(rows):
-        return "\\n".join(f"**{n}.** <@{r['user_id']}> — **{r['total']:,}** ({r['account']})" for n,r in enumerate(rows,1)) or "Ainda não há vídeos aprovados nesta semana."
+        return "\n".join(f"**{n}.** <@{r['user_id']}> — **{r['total']:,}** ({r['account']})" for n,r in enumerate(rows,1)) or "Ainda não há vídeos aprovados nesta semana."
     layout=discord.ui.LayoutView(timeout=None)
     layout.add_item(discord.ui.Container(
-        discord.ui.TextDisplay(f"# 🏆 RANKING SEMANAL • VÍDEOS\\n-# Semana iniciada em {monday.strftime('%d/%m/%Y')} (UTC)"),
+        discord.ui.TextDisplay(f"# 🏆 RANKING SEMANAL • VÍDEOS\n-# Semana iniciada em {monday.strftime('%d/%m/%Y')} (UTC)"),
         discord.ui.Separator(),
-        discord.ui.TextDisplay("## 👁️ Top 3 • Visualizações\\n"+lines(views)),
+        discord.ui.TextDisplay("## 👁️ Top 3 • Visualizações\n"+lines(views)),
         discord.ui.Separator(),
-        discord.ui.TextDisplay("## ❤️ Top 3 • Curtidas\\n"+lines(likes)),
+        discord.ui.TextDisplay("## ❤️ Top 3 • Curtidas\n"+lines(likes)),
         discord.ui.TextDisplay("-# Somente cadastros de vídeos aprovados entram na classificação."),
         accent_colour=0x9167FF))
     await i.response.send_message(view=layout)
