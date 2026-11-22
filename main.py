@@ -24,18 +24,61 @@ def init_db():
         CREATE TABLE IF NOT EXISTS registrations(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,roblox TEXT NOT NULL,account TEXT NOT NULL,views INTEGER NOT NULL,likes INTEGER NOT NULL,followers INTEGER NOT NULL,logs INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'PENDENTE',proof_url TEXT,proof_hash TEXT,proof_type TEXT,flags TEXT NOT NULL DEFAULT '[]',reviewer INTEGER,reason TEXT,created TEXT NOT NULL,reviewed TEXT);
         CREATE TABLE IF NOT EXISTS movements(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,amount INTEGER NOT NULL,balance_after INTEGER NOT NULL,kind TEXT NOT NULL,reason TEXT NOT NULL,actor INTEGER NOT NULL,registration_id INTEGER,created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS proof_hashes(hash TEXT PRIMARY KEY,registration_id INTEGER NOT NULL,user_id INTEGER NOT NULL,created TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS member_responses(id INTEGER PRIMARY KEY AUTOINCREMENT,registration_id INTEGER NOT NULL,user_id INTEGER NOT NULL,response TEXT NOT NULL,created TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS member_responses(id INTEGER PRIMARY KEY AUTOINCREMENT,registration_id INTEGER NOT NULL,user_id INTEGER NOT NULL,response TEXT NOT NULL,created TEXT NOT NULL);\n        CREATE TABLE IF NOT EXISTS live_registrations(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,roblox TEXT NOT NULL,discord_nick TEXT NOT NULL,comex_role TEXT NOT NULL,
+            views INTEGER NOT NULL,likes INTEGER NOT NULL,logs INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'PENDENTE',
+            proof_url TEXT NOT NULL,proof_hash TEXT,proof_type TEXT,flags TEXT NOT NULL DEFAULT '[]',
+            reviewer INTEGER,reason TEXT,created TEXT NOT NULL,reviewed TEXT
+        );
+        CREATE TABLE IF NOT EXISTS live_proof_hashes(hash TEXT PRIMARY KEY,live_id INTEGER NOT NULL,user_id INTEGER NOT NULL,created TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS live_created ON live_registrations(created,status);
+
         CREATE INDEX IF NOT EXISTS reg_user ON registrations(user_id,id);
         CREATE INDEX IF NOT EXISTS mov_user ON movements(user_id,id);
         """)
         cols={row[1] for row in c.execute("PRAGMA table_info(registrations)")}
         if "proof_type" not in cols: c.execute("ALTER TABLE registrations ADD COLUMN proof_type TEXT")
-        defaults={"views_unit":20,"views_logs":1,"likes_unit":100,"likes_logs":20,"followers_unit":100,"followers_logs":1}
+        defaults={"views_unit":20,"views_logs":1,"likes_unit":100,"likes_logs":20,"followers_unit":100,"followers_logs":1,"live_views_unit":20,"live_views_logs":1,"live_likes_unit":100,"live_likes_logs":20}
         for k,v in defaults.items(): c.execute("INSERT OR IGNORE INTO settings VALUES(?,?)",(k,v))
 def rules():
     with db() as c: return {r["k"]:r["v"] for r in c.execute("SELECT * FROM settings")}
 def calculate(v,l,f):
     r=rules(); return v//r["views_unit"]*r["views_logs"]+l//r["likes_unit"]*r["likes_logs"]+f//r["followers_unit"]*r["followers_logs"]
+def calculate_live(views,likes):
+    r=rules()
+    return views//r["live_views_unit"]*r["live_views_logs"]+likes//r["live_likes_unit"]*r["live_likes_logs"]
+def live_registration(rid):
+    with db() as c: return c.execute("SELECT * FROM live_registrations WHERE id=?",(rid,)).fetchone()
+def approve_live(rid,actor,reason):
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        r=c.execute("SELECT * FROM live_registrations WHERE id=?",(rid,)).fetchone()
+        if not r: return False,"Cadastro LIVE não encontrado.",None,None
+        if r["status"]!="PENDENTE": return False,"Esse cadastro LIVE já foi analisado.",None,None
+        b=movement(c,r["user_id"],r["logs"],"LIVE_APROVADA",f"Cadastro LIVE #{rid} aprovado: {reason}",actor,rid)
+        c.execute("UPDATE live_registrations SET status='APROVADO',reviewer=?,reason=?,reviewed=? WHERE id=?",(actor,reason,now(),rid))
+    return True,f"Cadastro LIVE #{rid} aprovado: {r['logs']} LOGS creditados. Saldo: {b}.",r["user_id"],r["logs"]
+def reject_live(rid,actor,reason):
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        r=c.execute("SELECT * FROM live_registrations WHERE id=?",(rid,)).fetchone()
+        if not r: return False,"Cadastro LIVE não encontrado.",None,None
+        if r["status"]!="PENDENTE": return False,"Esse cadastro LIVE já foi analisado.",None,None
+        c.execute("UPDATE live_registrations SET status='REPROVADO',reviewer=?,reason=?,reviewed=? WHERE id=?",(actor,reason,now(),rid))
+    return True,f"Cadastro LIVE #{rid} reprovado.",r["user_id"],0
+async def post_live_review(rid):
+    r=live_registration(rid)
+    if not r or not REVIEW_ID: return
+    ch=bot.get_channel(REVIEW_ID)
+    if not ch:
+        try: ch=await bot.fetch_channel(REVIEW_ID)
+        except Exception: log.exception("Canal de análise LIVE indisponível"); return
+    flags=json.loads(r["flags"])
+    media=(r["proof_type"] or "").lower()
+    image_ext=r["proof_url"].split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp"))
+    is_image=media.startswith("image/") or image_ext
+    bot_view=LiveReviewView(rid,r["user_id"],r["roblox"],r["discord_nick"],r["comex_role"],r["views"],r["likes"],r["logs"],flags,r["proof_url"],is_image)
+    await ch.send(view=bot_view)
 def balance(uid):
     with db() as c:
         r=c.execute("SELECT balance FROM wallets WHERE user_id=?",(uid,)).fetchone()
@@ -105,6 +148,48 @@ async def post_review(bot,rid):
     image_ext=bool(r["proof_url"] and r["proof_url"].split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp")))
     is_image=bool(r["proof_url"] and (media_type.startswith("image/") or image_ext))
     await ch.send(view=ReviewView(rid,r["user_id"],r["roblox"],r["account"],stats,r["logs"],verification,r["proof_url"],is_image))
+class LiveReviewModal(discord.ui.Modal):
+    def __init__(self,rid,approved):
+        super().__init__(title="Aprovar LIVE" if approved else "Reprovar LIVE",timeout=300)
+        self.rid=rid; self.approved=approved
+        self.reason=discord.ui.TextInput(label="Motivo / observação",placeholder="Explique a decisão...",style=discord.TextStyle.paragraph,min_length=3,max_length=500,required=True)
+        self.add_item(self.reason)
+    async def on_submit(self,i):
+        reason=str(self.reason.value).strip()
+        ok,msg,uid,logs=approve_live(self.rid,i.user.id,reason) if self.approved else reject_live(self.rid,i.user.id,reason)
+        await i.response.send_message(msg,ephemeral=True)
+        if ok:
+            heading="## ✅ Sua LIVE foi aprovada!" if self.approved else "## ❌ Seu cadastro de LIVE foi reprovado"
+            detail=f"**Cadastro LIVE:** #{self.rid}\n**LOGS creditados:** {logs if self.approved else 0}\n**Motivo:** {reason}"
+            try:
+                user=i.client.get_user(uid) or await i.client.fetch_user(uid)
+                await user.send(view=SimpleNoticeView(heading+"\n"+detail))
+            except Exception: log.exception("Falha ao notificar membro do cadastro LIVE.")
+            await audit(i.guild,f"{'✅ LIVE aprovada' if self.approved else '❌ LIVE reprovada'}: cadastro #{self.rid}, membro <@{uid}>. Responsável: {i.user.mention}. Motivo: {reason}")
+            if i.message:
+                try: await i.message.edit(view=None)
+                except Exception: log.exception("Falha ao atualizar painel LIVE.")
+class LiveReviewView(discord.ui.LayoutView):
+    def __init__(self,rid,user_id,roblox,discord_nick,role,views,likes,logs,flags,proof_url,is_image):
+        super().__init__(timeout=None)
+        yes=discord.ui.Button(label="Aprovar",style=discord.ButtonStyle.success,custom_id=f"logs:live:approve:{rid}",emoji="✅")
+        no=discord.ui.Button(label="Reprovar",style=discord.ButtonStyle.danger,custom_id=f"logs:live:reject:{rid}",emoji="❌")
+        async def yes_cb(i): await i.response.send_modal(LiveReviewModal(rid,True))
+        async def no_cb(i): await i.response.send_modal(LiveReviewModal(rid,False))
+        yes.callback=yes_cb; no.callback=no_cb
+        items=[discord.ui.TextDisplay(f"# 🔴 Cadastro de LIVE #{rid}\n**Responsável:** <@{user_id}>\n**Nick Roblox:** {roblox}\n**Nick Discord:** {discord_nick}\n**Cargo COMEX:** {role}"),
+            discord.ui.Separator(),discord.ui.TextDisplay(f"### 📊 Resultado da LIVE\n👁️ **Visualizações:** {views:,}\n❤️ **Curtidas:** {likes:,}\n💰 **LOGS calculados:** {logs}"),
+            discord.ui.TextDisplay("### 🛡️ Verificação\n"+("\n".join("• "+x for x in flags) if flags else "✅ Nenhuma duplicidade detectada; confira a comprovação."))]
+        if is_image: items.append(discord.ui.MediaGallery(discord.MediaGalleryItem(proof_url,description="Comprovação da LIVE")))
+        items.append(discord.ui.Separator())
+        buttons=[yes,no]
+        if not is_image: buttons.append(discord.ui.Button(label="Abrir comprovação",style=discord.ButtonStyle.link,url=proof_url,emoji="📎"))
+        items.extend([discord.ui.ActionRow(*buttons),discord.ui.TextDisplay("-# Sistema de LOGS • Revisão manual obrigatória")])
+        self.add_item(discord.ui.Container(*items,accent_colour=0xE74C3C))
+    async def interaction_check(self,i):
+        if not i.guild or not i.user.guild_permissions.administrator:
+            await i.response.send_message("Somente administradores podem revisar.",ephemeral=True); return False
+        return True
 class ReviewReasonModal(discord.ui.Modal):
     def __init__(self,rid,approved):
         super().__init__(title="Motivo da aprovação" if approved else "Motivo da reprovação",timeout=300)
@@ -186,6 +271,7 @@ class Bot(commands.Bot):
         init_db()
         with db() as c:
             pending=c.execute("SELECT * FROM registrations WHERE status='PENDENTE'").fetchall()
+            live_pending=c.execute("SELECT * FROM live_registrations WHERE status='PENDENTE'").fetchall()
             reviewed=[x["id"] for x in c.execute("SELECT id FROM registrations WHERE status IN ('APROVADO','REPROVADO')")]
         for r in pending:
             flags=json.loads(r["flags"])
@@ -195,6 +281,10 @@ class Bot(commands.Bot):
             image_ext=bool(r["proof_url"] and r["proof_url"].split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp")))
             is_image=bool(r["proof_url"] and (media_type.startswith("image/") or image_ext))
             self.add_view(ReviewView(r["id"],r["user_id"],r["roblox"],r["account"],stats,r["logs"],verification,r["proof_url"],is_image))
+        for r in live_pending:
+            flags=json.loads(r["flags"]); media=(r["proof_type"] or "").lower()
+            ext=r["proof_url"].split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp"))
+            self.add_view(LiveReviewView(r["id"],r["user_id"],r["roblox"],r["discord_nick"],r["comex_role"],r["views"],r["likes"],r["logs"],flags,r["proof_url"],media.startswith("image/") or ext))
         for rid in reviewed: self.add_view(MemberDecisionView(rid))
         await self.tree.sync()
 intents=discord.Intents.default()
@@ -210,6 +300,46 @@ async def atualizar_conta(i:discord.Interaction,views_unidade:app_commands.Range
         for k,v in vals.items(): c.execute("INSERT INTO settings VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",(k,v))
     await i.response.send_message(f"Regras salvas: {views_unidade} views = {views_logs} LOGS; {curtidas_unidade} curtidas = {curtidas_logs} LOGS; {seguidores_unidade} seguidores = {seguidores_logs} LOGS.",ephemeral=True)
     await audit(i.guild,f"⚙️ {i.user.mention} atualizou as regras.")
+@bot.tree.command(name="editar_conta_live",description="Configura as regras de conversão das LIVES.")
+@admin()
+async def editar_conta_live(i:discord.Interaction,views_unidade:app_commands.Range[int,1,100000000],views_logs:app_commands.Range[int,0,1000000],curtidas_unidade:app_commands.Range[int,1,100000000],curtidas_logs:app_commands.Range[int,0,1000000]):
+    vals={"live_views_unit":views_unidade,"live_views_logs":views_logs,"live_likes_unit":curtidas_unidade,"live_likes_logs":curtidas_logs}
+    with db() as c:
+        for k,v in vals.items(): c.execute("INSERT INTO settings VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",(k,v))
+    await i.response.send_message(f"Regras LIVE salvas: {views_unidade} views = {views_logs} LOGS; {curtidas_unidade} curtidas = {curtidas_logs} LOGS.",ephemeral=True)
+    await audit(i.guild,f"⚙️ {i.user.mention} atualizou as regras de conversão LIVE.")
+@bot.tree.command(name="registrar_logs_live",description="Envia uma LIVE para análise e cálculo de LOGS.")
+async def registrar_logs_live(i:discord.Interaction,nickroblox:app_commands.Range[str,1,80],nickdiscord:app_commands.Range[str,1,80],cargonocomex:app_commands.Range[str,1,100],viewsdalive:app_commands.Range[int,0,100000000],curtidas:app_commands.Range[int,0,100000000],comprovacao:discord.Attachment):
+    if comprovacao.size>8*1024*1024: return await i.response.send_message("Comprovação maior que 8 MB.",ephemeral=True)
+    if not (comprovacao.content_type or "").startswith(("image/","video/")): return await i.response.send_message("Envie uma imagem ou vídeo como comprovação.",ephemeral=True)
+    try: raw=await comprovacao.read()
+    except Exception: return await i.response.send_message("Não consegui ler a comprovação.",ephemeral=True)
+    proof_hash=hashlib.sha256(raw).hexdigest()
+    flags=[]
+    total=calculate_live(viewsdalive,curtidas)
+    with db() as c:
+        old=c.execute("SELECT live_id,user_id FROM live_proof_hashes WHERE hash=?",(proof_hash,)).fetchone()
+        if old: flags.append(f"Comprovação idêntica já usada no cadastro LIVE #{old['live_id']} (usuário {old['user_id']}).")
+        if not (viewsdalive or curtidas): flags.append("Visualizações e curtidas estão zeradas.")
+        cur=c.execute("INSERT INTO live_registrations(user_id,roblox,discord_nick,comex_role,views,likes,logs,proof_url,proof_hash,proof_type,flags,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(i.user.id,nickroblox,nickdiscord,cargonocomex,viewsdalive,curtidas,total,comprovacao.url,proof_hash,comprovacao.content_type or "",json.dumps(flags,ensure_ascii=False),now()))
+        rid=cur.lastrowid
+        c.execute("INSERT OR IGNORE INTO live_proof_hashes VALUES(?,?,?,?)",(proof_hash,rid,i.user.id,now()))
+    await i.response.send_message(f"Cadastro LIVE #{rid} enviado para análise. Cálculo preliminar: **{total} LOGS**. O crédito ocorre somente após aprovação.",ephemeral=True)
+    await post_live_review(rid)
+    await audit(i.guild,f"🔴 Novo cadastro LIVE #{rid} enviado por {i.user.mention}.")
+@bot.tree.command(name="ranking_semanal",description="Top 3 semanal de views e curtidas em LIVES aprovadas.")
+async def ranking_semanal(i:discord.Interaction):
+    from datetime import timedelta
+    today=datetime.now(timezone.utc)
+    monday=today.replace(hour=0,minute=0,second=0,microsecond=0)-timedelta(days=today.weekday())
+    with db() as c:
+        views=c.execute("SELECT user_id,discord_nick,SUM(views) total FROM live_registrations WHERE status='APROVADO' AND reviewed>=? GROUP BY user_id,discord_nick ORDER BY total DESC LIMIT 3",(monday.isoformat(timespec="seconds"),)).fetchall()
+        likes=c.execute("SELECT user_id,discord_nick,SUM(likes) total FROM live_registrations WHERE status='APROVADO' AND reviewed>=? GROUP BY user_id,discord_nick ORDER BY total DESC LIMIT 3",(monday.isoformat(timespec="seconds"),)).fetchall()
+    def lines(rows):
+        return "\n".join(f"**{n}.** <@{r['user_id']}> — **{r['total']:,}** ({r['discord_nick']})" for n,r in enumerate(rows,1)) or "Ainda não há LIVES aprovadas nesta semana."
+    layout=discord.ui.LayoutView(timeout=None)
+    layout.add_item(discord.ui.Container(discord.ui.TextDisplay(f"# 🏆 RANKING SEMANAL\n-# Semana iniciada em {monday.strftime('%d/%m/%Y')} (UTC)"),discord.ui.Separator(),discord.ui.TextDisplay("## 👁️ Top 3 • Visualizações\n"+lines(views)),discord.ui.Separator(),discord.ui.TextDisplay("## ❤️ Top 3 • Curtidas\n"+lines(likes)),discord.ui.TextDisplay("-# Somente cadastros LIVE aprovados entram na classificação."),accent_colour=0x9167FF))
+    await i.response.send_message(view=layout)
 @bot.tree.command(name="registrar_logs",description="Envia números e comprovante para análise.")
 async def registrar_logs(i:discord.Interaction,roblox_nick:app_commands.Range[str,1,80],conta_social:app_commands.Range[str,1,150],curtidas:app_commands.Range[int,0,100000000],seguidores:app_commands.Range[int,0,100000000],views:app_commands.Range[int,0,100000000]=0,comprovante:discord.Attachment=None,link_comprovante:str=None):
     if not comprovante and not link_comprovante: return await i.response.send_message("Envie um arquivo ou link de comprovante.",ephemeral=True)
