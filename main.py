@@ -262,8 +262,8 @@ class ReviewView(discord.ui.LayoutView):
         items.append(discord.ui.TextDisplay("-# Sistema de LOGS • A decisão exige conferência humana"))
         self.add_item(discord.ui.Container(*items,accent_colour=0x9167FF))
     async def interaction_check(self,i):
-        if not i.guild or not i.user.guild_permissions.administrator:
-            await i.response.send_message("Somente administradores podem revisar.",ephemeral=True); return False
+        if not i.guild or not logs_staff_member(i.user):
+            await i.response.send_message("Somente administradores, o cargo autorizado ou o usuário autorizado podem revisar.",ephemeral=True); return False
         return True
 class MemberReplyModal(discord.ui.Modal):
     def __init__(self,rid):
