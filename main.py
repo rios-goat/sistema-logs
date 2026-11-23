@@ -10,6 +10,8 @@ DB_PATH=os.getenv("DB_PATH","data/logs.db")
 REVIEW_ID=int(os.getenv("LOGS_REVIEW_CHANNEL_ID","0") or 0)
 AUDIT_ID=int(os.getenv("LOGS_AUDIT_CHANNEL_ID","0") or 0)
 GUILD_ID=int(os.getenv("GUILD_ID","1554264275684565103") or 0)
+LOGS_STAFF_ROLE_ID=1569043605228748940
+LOGS_STAFF_USER_ID=1340377944215785502
 Path(DB_PATH).parent.mkdir(parents=True,exist_ok=True)
 logging.basicConfig(level=logging.INFO,format="%(asctime)s | %(levelname)s | %(message)s")
 log=logging.getLogger("SistemaLOGS")
@@ -111,6 +113,17 @@ def admin():
         if not i.guild or not i.user.guild_permissions.administrator: raise app_commands.CheckFailure("Comando exclusivo para quem tem a permissão nativa Administrador.")
         return True
     return app_commands.check(check)
+def logs_staff_member(member):
+    if not member: return False
+    if member.id==LOGS_STAFF_USER_ID: return True
+    if getattr(member,"guild_permissions",None) and member.guild_permissions.administrator: return True
+    return any(role.id==LOGS_STAFF_ROLE_ID for role in getattr(member,"roles",[]))
+def logs_staff():
+    async def check(i):
+        if not i.guild or not logs_staff_member(i.user):
+            raise app_commands.CheckFailure("Apenas administradores, o cargo autorizado ou o usuário autorizado podem usar esta função.")
+        return True
+    return app_commands.check(check)
 def registration(rid):
     with db() as c: return c.execute("SELECT * FROM registrations WHERE id=?",(rid,)).fetchone()
 def approve(rid,actor,reason):
@@ -203,8 +216,8 @@ class LiveReviewView(discord.ui.LayoutView):
         items.extend([discord.ui.ActionRow(*buttons),discord.ui.TextDisplay("-# Sistema de LOGS • Revisão manual obrigatória")])
         self.add_item(discord.ui.Container(*items,accent_colour=0xE74C3C))
     async def interaction_check(self,i):
-        if not i.guild or not i.user.guild_permissions.administrator:
-            await i.response.send_message("Somente administradores podem revisar.",ephemeral=True); return False
+        if not i.guild or not logs_staff_member(i.user):
+            await i.response.send_message("Somente administradores, o cargo autorizado ou o usuário autorizado podem revisar.",ephemeral=True); return False
         return True
 class ReviewReasonModal(discord.ui.Modal):
     def __init__(self,rid,approved):
@@ -498,7 +511,7 @@ async def ranking_logs(i):
     with db() as c: rows=c.execute("SELECT user_id,balance FROM wallets WHERE balance>0 ORDER BY balance DESC LIMIT 10").fetchall()
     await i.response.send_message("🏆 Ranking de LOGS\\n"+("\\n".join(f"{n}. <@{r['user_id']}> — {r['balance']} LOGS" for n,r in enumerate(rows,1)) if rows else "Ainda vazio."))
 @bot.tree.command(name="editar_saldo",description="Adiciona, remove ou define o saldo de um membro.")
-@admin()
+@logs_staff()
 @app_commands.choices(modo=[app_commands.Choice(name="Adicionar",value="adicionar"),app_commands.Choice(name="Remover",value="remover"),app_commands.Choice(name="Definir",value="definir")])
 async def editar_saldo(i,membro:discord.Member,quantidade:app_commands.Range[int,0,1000000000],modo:app_commands.Choice[str],motivo:app_commands.Range[str,1,250]):
     try:
@@ -556,14 +569,14 @@ async def analisar_logs(i,cadastro_id:app_commands.Range[int,1,2147483647]):
     layout.add_item(discord.ui.Container(*items,accent_colour=0x9167FF))
     await i.response.send_message(view=layout,ephemeral=True)
 @bot.tree.command(name="aprovar_logs",description="Aprova cadastro e credita a carteira.")
-@admin()
+@logs_staff()
 async def aprovar_logs(i,cadastro_id:app_commands.Range[int,1,2147483647],motivo:app_commands.Range[str,3,500]):
     ok,msg,uid,logs=approve(cadastro_id,i.user.id,motivo); await i.response.send_message(msg,ephemeral=True)
     if ok:
         await notify_member(bot,cadastro_id,True,motivo,logs)
         await audit(i.guild,f"✅ {i.user.mention} aprovou cadastro #{cadastro_id}. Motivo: {motivo}")
 @bot.tree.command(name="reprovar_logs",description="Reprova cadastro com motivo.")
-@admin()
+@logs_staff()
 async def reprovar_logs(i,cadastro_id:app_commands.Range[int,1,2147483647],motivo:app_commands.Range[str,3,500]):
     ok,msg,uid,logs=reject(cadastro_id,i.user.id,motivo); await i.response.send_message(msg,ephemeral=True)
     if ok:
