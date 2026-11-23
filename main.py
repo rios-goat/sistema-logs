@@ -9,6 +9,7 @@ TOKEN=os.getenv("DISCORD_TOKEN")
 DB_PATH=os.getenv("DB_PATH","data/logs.db")
 REVIEW_ID=int(os.getenv("LOGS_REVIEW_CHANNEL_ID","0") or 0)
 AUDIT_ID=int(os.getenv("LOGS_AUDIT_CHANNEL_ID","0") or 0)
+REGISTRATION_CHANNEL_ID=1566053094029135923
 GUILD_ID=int(os.getenv("GUILD_ID","1554264275684565103") or 0)
 LOGS_STAFF_ROLE_ID=1569043605228748940
 LOGS_STAFF_USER_ID=1340377944215785502
@@ -150,6 +151,13 @@ async def audit(guild,message):
         await channel.send(view=SimpleNoticeView(f"## 📋 Sistema de LOGS • Auditoria\n{message}\n\n-# Registro automático • {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M UTC')}"))
     except Exception:
         log.exception("Falha ao registrar auditoria.")
+
+async def post_registration_notice(guild,message):
+    try:
+        channel=(guild.get_channel(REGISTRATION_CHANNEL_ID) if guild else None) or await bot.fetch_channel(REGISTRATION_CHANNEL_ID)
+        await channel.send(message)
+    except Exception:
+        log.exception("Falha ao publicar aviso de novo cadastro no canal de registros.")
 
 async def notify_member(bot,rid,approved,reason,logs):
     r=registration(rid)
@@ -439,6 +447,7 @@ async def registrar_logs_live(i:discord.Interaction,nickroblox:app_commands.Rang
         c.execute("INSERT OR IGNORE INTO live_proof_hashes VALUES(?,?,?,?)",(proof_hash,rid,i.user.id,now()))
     await i.response.send_message(f"Cadastro LIVE #{rid} enviado para análise. Cálculo preliminar: **{total} LOGS**. O crédito ocorre somente após aprovação.\n\n📅 Aviso: para as contagens semanais, só entram registros feitos nesta semana (segunda a domingo).",ephemeral=True)
     await post_live_review(rid)
+    await post_registration_notice(i.guild,f"## 🔴 Novo registro de LIVE • #{rid}\n**Membro:** {i.user.mention}\n**Nick Roblox:** {nickroblox}\n**Nick Discord:** {nickdiscord}\n**Cargo COMEX:** {cargonocomex}\n**Visualizações:** {viewsdalive:,}\n**LOGS preliminares:** {total}\n**Status:** Pendente de análise.")
     await audit(i.guild,f"🔴 Novo cadastro LIVE #{rid} enviado por {i.user.mention}.")
 @bot.tree.command(name="ranking_semanal",description="Top 3 semanal de views e curtidas dos vídeos aprovados.")
 async def ranking_semanal(i:discord.Interaction):
@@ -483,7 +492,9 @@ async def registrar_logs(i:discord.Interaction,roblox_nick:app_commands.Range[st
         rid=cur.lastrowid
         if proof_hash: c.execute("INSERT OR IGNORE INTO proof_hashes VALUES(?,?,?,?)",(proof_hash,rid,i.user.id,now()))
     await i.response.send_message(f"Cadastro #{rid} enviado! Cálculo: {total} LOGS. Status: PENDENTE; o saldo só entra após aprovação.\n\n📅 Aviso: para as contagens semanais, só entram registros feitos nesta semana (segunda a domingo).",ephemeral=True)
-    await post_review(bot,rid); await audit(i.guild,f"📥 Novo cadastro #{rid} enviado por {i.user.mention}.")
+    await post_review(bot,rid)
+    await post_registration_notice(i.guild,f"## 📥 Novo registro de vídeo • #{rid}\n**Membro:** {i.user.mention}\n**Nick Roblox:** {roblox_nick}\n**Conta social:** {conta_social}\n**Visualizações:** {views:,}\n**Curtidas:** {curtidas:,}\n**Seguidores:** {seguidores:,}\n**LOGS preliminares:** {total}\n**Status:** Pendente de análise.")
+    await audit(i.guild,f"📥 Novo cadastro #{rid} enviado por {i.user.mention}.")
 @bot.tree.command(name="transferir_logs",description="Solicita uma transferência de LOGS para outro membro.")
 async def transferir_logs(i:discord.Interaction,recebedor:discord.Member,quantidade:app_commands.Range[int,1,1000000000],motivo:app_commands.Range[str,1,250]):
     if recebedor.bot: return await i.response.send_message("Não é possível transferir LOGS para bots.",ephemeral=True)
