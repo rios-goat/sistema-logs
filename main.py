@@ -36,6 +36,7 @@ def init_db():
             reviewer INTEGER,reason TEXT,created TEXT NOT NULL,reviewed TEXT
         );
         CREATE TABLE IF NOT EXISTS live_proof_hashes(hash TEXT PRIMARY KEY,live_id INTEGER NOT NULL,user_id INTEGER NOT NULL,created TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS registration_announcements(kind TEXT NOT NULL,registration_id INTEGER NOT NULL,channel_id INTEGER NOT NULL,message_id INTEGER NOT NULL,PRIMARY KEY(kind,registration_id));
         CREATE TABLE IF NOT EXISTS log_transfers(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             sender_id INTEGER NOT NULL, receiver_id INTEGER NOT NULL,
@@ -152,12 +153,57 @@ async def audit(guild,message):
     except Exception:
         log.exception("Falha ao registrar auditoria.")
 
-async def post_registration_notice(guild,message):
+def registration_embed(kind,rid,status="PENDENTE",reason=None,reviewer=None):
+    with db() as c:
+        if kind=="live":
+            r=c.execute("SELECT * FROM live_registrations WHERE id=?",(rid,)).fetchone()
+            if not r: return None
+            e=discord.Embed(title=f"🔴 Registro de LIVE • #{rid}",color=0xF1C40F if status=="PENDENTE" else (0x2ECC71 if status=="APROVADO" else 0xE74C3C))
+            e.add_field(name="Membro",value=f"<@{r['user_id']}>",inline=False)
+            e.add_field(name="Nick Roblox",value=r["roblox"],inline=True)
+            e.add_field(name="Nick Discord",value=r["discord_nick"],inline=True)
+            e.add_field(name="Cargo COMEX",value=r["comex_role"],inline=True)
+            e.add_field(name="Visualizações",value=f"{r['views']:,}",inline=True)
+            e.add_field(name="LOGS preliminares",value=f"{r['logs']:,}",inline=True)
+        else:
+            r=c.execute("SELECT * FROM registrations WHERE id=?",(rid,)).fetchone()
+            if not r: return None
+            e=discord.Embed(title=f"📥 Registro de vídeo • #{rid}",color=0xF1C40F if status=="PENDENTE" else (0x2ECC71 if status=="APROVADO" else 0xE74C3C))
+            e.add_field(name="Membro",value=f"<@{r['user_id']}>",inline=False)
+            e.add_field(name="Nick Roblox",value=r["roblox"],inline=True)
+            e.add_field(name="Conta social",value=r["account"],inline=True)
+            e.add_field(name="Visualizações",value=f"{r['views']:,}",inline=True)
+            e.add_field(name="Curtidas",value=f"{r['likes']:,}",inline=True)
+            e.add_field(name="Seguidores",value=f"{r['followers']:,}",inline=True)
+            e.add_field(name="LOGS preliminares",value=f"{r['logs']:,}",inline=True)
+    label={"PENDENTE":"🟡 Pendente de análise","APROVADO":"✅ ACEITO","REPROVADO":"❌ NÃO ACEITO"}.get(status,status)
+    e.add_field(name="Status",value=label,inline=False)
+    if reason: e.add_field(name="Motivo / observação",value=reason[:1024],inline=False)
+    if reviewer: e.add_field(name="Analisado por",value=f"<@{reviewer}>",inline=False)
+    e.set_footer(text="Sistema de LOGS • Atualizado automaticamente")
+    return e
+
+async def post_registration_notice(guild,kind,rid):
     try:
         channel=(guild.get_channel(REGISTRATION_CHANNEL_ID) if guild else None) or await bot.fetch_channel(REGISTRATION_CHANNEL_ID)
-        await channel.send(message)
+        message=await channel.send(embed=registration_embed(kind,rid))
+        with db() as c:
+            c.execute("INSERT OR REPLACE INTO registration_announcements(kind,registration_id,channel_id,message_id) VALUES(?,?,?,?)",(kind,rid,channel.id,message.id))
     except Exception:
         log.exception("Falha ao publicar aviso de novo cadastro no canal de registros.")
+
+async def update_registration_notice(kind,rid,status,reason,reviewer):
+    try:
+        with db() as c:
+            saved=c.execute("SELECT channel_id,message_id FROM registration_announcements WHERE kind=? AND registration_id=?",(kind,rid)).fetchone()
+        if not saved: return
+        channel=bot.get_channel(saved["channel_id"]) or await bot.fetch_channel(saved["channel_id"])
+        message=await channel.fetch_message(saved["message_id"])
+        await message.edit(embed=registration_embed(kind,rid,status,reason,reviewer),view=None)
+    except discord.NotFound:
+        log.warning("Aviso público do cadastro %s #%s não foi encontrado.",kind,rid)
+    except Exception:
+        log.exception("Falha ao atualizar status público do cadastro %s #%s.",kind,rid)
 
 async def notify_member(bot,rid,approved,reason,logs):
     r=registration(rid)
@@ -196,6 +242,7 @@ class LiveReviewModal(discord.ui.Modal):
         ok,msg,uid,logs=approve_live(self.rid,i.user.id,reason) if self.approved else reject_live(self.rid,i.user.id,reason)
         await i.response.send_message(msg,ephemeral=True)
         if ok:
+            await update_registration_notice("live",self.rid,"APROVADO" if self.approved else "REPROVADO",reason,i.user.id)
             heading="## ✅ Sua LIVE foi aprovada!" if self.approved else "## ❌ Seu cadastro de LIVE foi reprovado"
             detail=f"**Cadastro LIVE:** #{self.rid}\n**LOGS creditados:** {logs if self.approved else 0}\n**Motivo:** {reason}"
             try:
@@ -239,6 +286,7 @@ class ReviewReasonModal(discord.ui.Modal):
         else: ok,msg,uid,logs=reject(self.rid,i.user.id,reason)
         await i.response.send_message(msg,ephemeral=True)
         if ok:
+            await update_registration_notice("video",self.rid,"APROVADO" if self.approved else "REPROVADO",reason,i.user.id)
             await notify_member(i.client,self.rid,self.approved,reason,logs)
             await audit(i.guild,f"{'✅ Aprovado' if self.approved else '❌ Reprovado'}: cadastro #{self.rid}, membro <@{uid}>. Responsável: {i.user.mention}. Motivo: {reason}")
             if i.message:
@@ -447,7 +495,7 @@ async def registrar_logs_live(i:discord.Interaction,nickroblox:app_commands.Rang
         c.execute("INSERT OR IGNORE INTO live_proof_hashes VALUES(?,?,?,?)",(proof_hash,rid,i.user.id,now()))
     await i.response.send_message(f"Cadastro LIVE #{rid} enviado para análise. Cálculo preliminar: **{total} LOGS**. O crédito ocorre somente após aprovação.\n\n📅 Aviso: para as contagens semanais, só entram registros feitos nesta semana (segunda a domingo).",ephemeral=True)
     await post_live_review(rid)
-    await post_registration_notice(i.guild,f"## 🔴 Novo registro de LIVE • #{rid}\n**Membro:** {i.user.mention}\n**Nick Roblox:** {nickroblox}\n**Nick Discord:** {nickdiscord}\n**Cargo COMEX:** {cargonocomex}\n**Visualizações:** {viewsdalive:,}\n**LOGS preliminares:** {total}\n**Status:** Pendente de análise.")
+    await post_registration_notice(i.guild,"live",rid)
     await audit(i.guild,f"🔴 Novo cadastro LIVE #{rid} enviado por {i.user.mention}.")
 @bot.tree.command(name="ranking_semanal",description="Top 3 semanal de views e curtidas dos vídeos aprovados.")
 async def ranking_semanal(i:discord.Interaction):
@@ -493,7 +541,7 @@ async def registrar_logs(i:discord.Interaction,roblox_nick:app_commands.Range[st
         if proof_hash: c.execute("INSERT OR IGNORE INTO proof_hashes VALUES(?,?,?,?)",(proof_hash,rid,i.user.id,now()))
     await i.response.send_message(f"Cadastro #{rid} enviado! Cálculo: {total} LOGS. Status: PENDENTE; o saldo só entra após aprovação.\n\n📅 Aviso: para as contagens semanais, só entram registros feitos nesta semana (segunda a domingo).",ephemeral=True)
     await post_review(bot,rid)
-    await post_registration_notice(i.guild,f"## 📥 Novo registro de vídeo • #{rid}\n**Membro:** {i.user.mention}\n**Nick Roblox:** {roblox_nick}\n**Conta social:** {conta_social}\n**Visualizações:** {views:,}\n**Curtidas:** {curtidas:,}\n**Seguidores:** {seguidores:,}\n**LOGS preliminares:** {total}\n**Status:** Pendente de análise.")
+    await post_registration_notice(i.guild,"video",rid)
     await audit(i.guild,f"📥 Novo cadastro #{rid} enviado por {i.user.mention}.")
 @bot.tree.command(name="transferir_logs",description="Solicita uma transferência de LOGS para outro membro.")
 async def transferir_logs(i:discord.Interaction,recebedor:discord.Member,quantidade:app_commands.Range[int,1,1000000000],motivo:app_commands.Range[str,1,250]):
@@ -584,6 +632,7 @@ async def analisar_logs(i,cadastro_id:app_commands.Range[int,1,2147483647]):
 async def aprovar_logs(i,cadastro_id:app_commands.Range[int,1,2147483647],motivo:app_commands.Range[str,3,500]):
     ok,msg,uid,logs=approve(cadastro_id,i.user.id,motivo); await i.response.send_message(msg,ephemeral=True)
     if ok:
+        await update_registration_notice("video",cadastro_id,"APROVADO",motivo,i.user.id)
         await notify_member(bot,cadastro_id,True,motivo,logs)
         await audit(i.guild,f"✅ {i.user.mention} aprovou cadastro #{cadastro_id}. Motivo: {motivo}")
 @bot.tree.command(name="reprovar_logs",description="Reprova cadastro com motivo.")
@@ -591,6 +640,7 @@ async def aprovar_logs(i,cadastro_id:app_commands.Range[int,1,2147483647],motivo
 async def reprovar_logs(i,cadastro_id:app_commands.Range[int,1,2147483647],motivo:app_commands.Range[str,3,500]):
     ok,msg,uid,logs=reject(cadastro_id,i.user.id,motivo); await i.response.send_message(msg,ephemeral=True)
     if ok:
+        await update_registration_notice("video",cadastro_id,"REPROVADO",motivo,i.user.id)
         await notify_member(bot,cadastro_id,False,motivo,logs)
         await audit(i.guild,f"❌ {i.user.mention} reprovou cadastro #{cadastro_id}: {motivo}")
 if not TOKEN: raise RuntimeError("Configure DISCORD_TOKEN nas variáveis de ambiente.")
