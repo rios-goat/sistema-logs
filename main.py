@@ -576,12 +576,25 @@ async def ranking_logs(i):
         medals=["🥇","🥈","🥉"]
         lines=[]
         for n,r in enumerate(rows,1):
-            member=i.guild.get_member(r["user_id"]) if i.guild else None
-            user=member or bot.get_user(r["user_id"])
-            name=user.display_name if isinstance(user,discord.Member) else (user.name if user else f"Usuário {r['user_id']}")
+            user=None
+            if i.guild:
+                user=i.guild.get_member(r["user_id"])
+                if user is None:
+                    try:
+                        user=await i.guild.fetch_member(r["user_id"])
+                    except (discord.NotFound,discord.Forbidden,discord.HTTPException):
+                        user=None
+            if user is None:
+                user=bot.get_user(r["user_id"])
+            if user is None:
+                try:
+                    user=await bot.fetch_user(r["user_id"])
+                except (discord.NotFound,discord.Forbidden,discord.HTTPException):
+                    user=None
+            name=(user.display_name if isinstance(user,discord.Member) else user.name) if user else "Membro não encontrado"
             prefix=medals[n-1] if n<=3 else f"**{n}º**"
             lines.append(f"{prefix} **{discord.utils.escape_markdown(name)}** — **{r['balance']:,} LOGS**")
-        embed.description="\\n".join(lines)
+        embed.description="\n".join(lines)
     embed.set_footer(text="COMEXBot • Ranking de saldos")
     await i.response.send_message(embed=embed,allowed_mentions=discord.AllowedMentions.none())
 @bot.tree.command(name="editar_saldo",description="Adiciona, remove ou define o saldo de um membro.")
