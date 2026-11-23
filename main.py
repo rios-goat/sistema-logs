@@ -377,13 +377,8 @@ class Bot(commands.Bot):
         with db() as c:
             transfer_ids=[r["id"] for r in c.execute("SELECT id FROM log_transfers WHERE status='PENDENTE'")]
         for tid in transfer_ids: self.add_view(TransferView(tid))
-        if not GUILD_ID:
-            raise RuntimeError("Configure GUILD_ID com o ID do servidor autorizado.")
-        guild=discord.Object(id=GUILD_ID)
-        self.tree.clear_commands(guild=None)
-        await self.tree.sync()
-        await self.tree.sync(guild=guild)
-        log.info("Comandos sincronizados exclusivamente no servidor %s",GUILD_ID)
+        synced=await self.tree.sync()
+        log.info("Comandos globais sincronizados: %s. Disponíveis em todos os servidores onde o bot estiver instalado.",len(synced))
 intents=discord.Intents.default()
 bot=Bot(command_prefix="!",intents=intents)
 @bot.event
