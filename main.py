@@ -567,8 +567,23 @@ async def meus_logs(i):
     await i.response.send_message("\\n".join(lines),ephemeral=True)
 @bot.tree.command(name="ranking_logs",description="Exibe os 10 maiores saldos.")
 async def ranking_logs(i):
-    with db() as c: rows=c.execute("SELECT user_id,balance FROM wallets WHERE balance>0 ORDER BY balance DESC LIMIT 10").fetchall()
-    await i.response.send_message("🏆 Ranking de LOGS\\n"+("\\n".join(f"{n}. <@{r['user_id']}> — {r['balance']} LOGS" for n,r in enumerate(rows,1)) if rows else "Ainda vazio."))
+    with db() as c:
+        rows=c.execute("SELECT user_id,balance FROM wallets WHERE balance>0 ORDER BY balance DESC LIMIT 10").fetchall()
+    embed=discord.Embed(title="🏆 Ranking de LOGS",color=0xD4AF37)
+    if not rows:
+        embed.description="Ainda não há saldos no ranking."
+    else:
+        medals=["🥇","🥈","🥉"]
+        lines=[]
+        for n,r in enumerate(rows,1):
+            member=i.guild.get_member(r["user_id"]) if i.guild else None
+            user=member or bot.get_user(r["user_id"])
+            name=user.display_name if isinstance(user,discord.Member) else (user.name if user else f"Usuário {r['user_id']}")
+            prefix=medals[n-1] if n<=3 else f"**{n}º**"
+            lines.append(f"{prefix} **{discord.utils.escape_markdown(name)}** — **{r['balance']:,} LOGS**")
+        embed.description="\\n".join(lines)
+    embed.set_footer(text="COMEXBot • Ranking de saldos")
+    await i.response.send_message(embed=embed,allowed_mentions=discord.AllowedMentions.none())
 @bot.tree.command(name="editar_saldo",description="Adiciona, remove ou define o saldo de um membro.")
 @logs_staff()
 @app_commands.choices(modo=[app_commands.Choice(name="Adicionar",value="adicionar"),app_commands.Choice(name="Remover",value="remover"),app_commands.Choice(name="Definir",value="definir")])
