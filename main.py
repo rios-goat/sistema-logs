@@ -576,8 +576,12 @@ async def transferir_logs(i:discord.Interaction,recebedor:discord.Member,quantid
     await i.response.send_message(f"🔄 Pedido de transferência: {i.user.mention} e {recebedor.mention} precisam aceitar. Depois um ADM aprova aqui mesmo.",view=TransferView(tid))
     await audit(i.guild,f"🔄 Nova transferência #{tid}: {i.user.mention} solicitou {quantidade} LOGS para {recebedor.mention}. Motivo: {motivo}")
 
-@bot.tree.command(name="carteira",description="Consulta seu saldo de LOGS.")
-async def carteira(i): await i.response.send_message(f"Sua carteira: **{balance(i.user.id)} LOGS**.",ephemeral=True)
+@bot.tree.command(name="carteira",description="Consulta sua carteira ou a de outro membro, sem mencionar ninguém.")
+async def carteira(i,membro:discord.Member|None=None):
+    alvo=membro or i.user
+    nome=alvo.display_name
+    saldo=balance(alvo.id)
+    await i.response.send_message(f"💰 **Carteira de {discord.utils.escape_markdown(nome)}**\\nSaldo: **{saldo:,} LOGS**.",ephemeral=True)
 @bot.tree.command(name="meus_logs",description="Mostra seus cadastros e movimentações recentes.")
 async def meus_logs(i):
     with db() as c:
