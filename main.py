@@ -581,7 +581,7 @@ async def carteira(i,membro:discord.Member|None=None):
     alvo=membro or i.user
     nome=alvo.display_name
     saldo=balance(alvo.id)
-    await i.response.send_message(f"💰 **Carteira de {discord.utils.escape_markdown(nome)}**\\nSaldo: **{saldo:,} LOGS**.",ephemeral=True)
+    await i.response.send_message(f"💰 **Carteira de {discord.utils.escape_markdown(nome)}**\nSaldo: **{saldo:,} LOGS**.",ephemeral=True)
 @bot.tree.command(name="meus_logs",description="Mostra seus cadastros e movimentações recentes.")
 async def meus_logs(i):
     with db() as c:
