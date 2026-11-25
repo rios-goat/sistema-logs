@@ -53,6 +53,11 @@ def init_db():
         """)
         cols={row[1] for row in c.execute("PRAGMA table_info(registrations)")}
         if "proof_type" not in cols: c.execute("ALTER TABLE registrations ADD COLUMN proof_type TEXT")
+        if "proof_urls" not in cols: c.execute("ALTER TABLE registrations ADD COLUMN proof_urls TEXT NOT NULL DEFAULT '[]'")
+        if "proof_types" not in cols: c.execute("ALTER TABLE registrations ADD COLUMN proof_types TEXT NOT NULL DEFAULT '[]'")
+        live_cols={row[1] for row in c.execute("PRAGMA table_info(live_registrations)")}
+        if "proof_urls" not in live_cols: c.execute("ALTER TABLE live_registrations ADD COLUMN proof_urls TEXT NOT NULL DEFAULT '[]'")
+        if "proof_types" not in live_cols: c.execute("ALTER TABLE live_registrations ADD COLUMN proof_types TEXT NOT NULL DEFAULT '[]'")
         defaults={"views_unit":20,"views_logs":1,"likes_unit":5,"likes_logs":1,"followers_unit":100,"followers_logs":1,"live_views_unit":20,"live_views_logs":1,"live_likes_unit":100,"live_likes_logs":20}
         for k,v in defaults.items(): c.execute("INSERT OR IGNORE INTO settings VALUES(?,?)",(k,v))
         # Migração única: atualiza instalações existentes para 5 curtidas = 1 LOG.
@@ -94,11 +99,14 @@ async def post_live_review(rid):
         try: ch=await bot.fetch_channel(REVIEW_ID)
         except Exception: log.exception("Canal de análise LIVE indisponível"); return
     flags=json.loads(r["flags"])
-    media=(r["proof_type"] or "").lower()
-    image_ext=r["proof_url"].split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp"))
-    is_image=media.startswith("image/") or image_ext
-    bot_view=LiveReviewView(rid,r["user_id"],r["roblox"],r["discord_nick"],r["comex_role"],r["views"],r["logs"],flags,r["proof_url"],is_image)
+    try: urls=json.loads(r["proof_urls"] or "[]")
+    except Exception: urls=[]
+    if not urls and r["proof_url"]: urls=[r["proof_url"]]
+    types=json.loads(r["proof_types"] or "[]") if r["proof_types"] else []
+    image_urls=[u for idx,u in enumerate(urls) if (types[idx] if idx<len(types) else "").startswith("image/") or u.split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp"))]
+    bot_view=LiveReviewView(rid,r["user_id"],r["roblox"],r["discord_nick"],r["comex_role"],r["views"],r["logs"],flags,r["proof_url"],bool(image_urls),image_urls)
     await ch.send(view=bot_view)
+
 def balance(uid):
     with db() as c:
         r=c.execute("SELECT balance FROM wallets WHERE user_id=?",(uid,)).fetchone()
@@ -227,10 +235,13 @@ async def post_review(bot,rid):
     flags=json.loads(r["flags"])
     stats=f"👁️ **Views:** {r['views']:,}\n❤️ **Curtidas:** {r['likes']:,}\n👥 **Seguidores:** {r['followers']:,}"
     verification="\n".join(f"• {flag}" for flag in flags) if flags else "✅ Nenhuma duplicidade detectada.\nA conferência visual continua necessária."
-    media_type=(r["proof_type"] or "").lower()
-    image_ext=bool(r["proof_url"] and r["proof_url"].split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp")))
-    is_image=bool(r["proof_url"] and (media_type.startswith("image/") or image_ext))
-    await ch.send(view=ReviewView(rid,r["user_id"],r["roblox"],r["account"],stats,r["logs"],verification,r["proof_url"],is_image))
+    try: urls=json.loads(r["proof_urls"] or "[]")
+    except Exception: urls=[]
+    if not urls and r["proof_url"]: urls=[r["proof_url"]]
+    types=json.loads(r["proof_types"] or "[]") if r["proof_types"] else []
+    image_urls=[u for idx,u in enumerate(urls) if (types[idx] if idx<len(types) else "").startswith("image/") or u.split("?",1)[0].lower().endswith((".png",".jpg",".jpeg",".gif",".webp"))]
+    await ch.send(view=ReviewView(rid,r["user_id"],r["roblox"],r["account"],stats,r["logs"],verification,r["proof_url"],bool(image_urls),image_urls))
+
 class LiveReviewModal(discord.ui.Modal):
     def __init__(self,rid,approved):
         super().__init__(title="Aprovar LIVE" if approved else "Reprovar LIVE",timeout=300)
@@ -254,7 +265,7 @@ class LiveReviewModal(discord.ui.Modal):
                 try: await i.message.edit(view=None)
                 except Exception: log.exception("Falha ao atualizar painel LIVE.")
 class LiveReviewView(discord.ui.LayoutView):
-    def __init__(self,rid,user_id,roblox,discord_nick,role,views,logs,flags,proof_url,is_image):
+    def __init__(self,rid,user_id,roblox,discord_nick,role,views,logs,flags,proof_url,is_image,proof_urls=None):
         super().__init__(timeout=None)
         yes=discord.ui.Button(label="Aprovar",style=discord.ButtonStyle.success,custom_id=f"logs:live:approve:{rid}",emoji="✅")
         no=discord.ui.Button(label="Reprovar",style=discord.ButtonStyle.danger,custom_id=f"logs:live:reject:{rid}",emoji="❌")
@@ -264,7 +275,8 @@ class LiveReviewView(discord.ui.LayoutView):
         items=[discord.ui.TextDisplay(f"# 🔴 Cadastro de LIVE #{rid}\n**Responsável:** <@{user_id}>\n**Nick Roblox:** {roblox}\n**Nick Discord:** {discord_nick}\n**Cargo COMEX:** {role}"),
             discord.ui.Separator(),discord.ui.TextDisplay(f"### 📊 Resultado da LIVE\n👁️ **Visualizações:** {views:,}\n💰 **LOGS calculados:** {logs}"),
             discord.ui.TextDisplay("### 🛡️ Verificação\n"+("\n".join("• "+x for x in flags) if flags else "✅ Nenhuma duplicidade detectada; confira a comprovação."))]
-        if is_image: items.append(discord.ui.MediaGallery(discord.MediaGalleryItem(proof_url,description="Comprovação da LIVE")))
+        gallery_urls=proof_urls or ([proof_url] if is_image and proof_url else [])
+        if gallery_urls: items.append(discord.ui.MediaGallery(*[discord.MediaGalleryItem(url,description=f"Comprovação LIVE {n}") for n,url in enumerate(gallery_urls,1)]))
         items.append(discord.ui.Separator())
         buttons=[yes,no]
         if not is_image: buttons.append(discord.ui.Button(label="Abrir comprovação",style=discord.ButtonStyle.link,url=proof_url,emoji="📎"))
@@ -293,7 +305,7 @@ class ReviewReasonModal(discord.ui.Modal):
                 try: await i.message.edit(view=None)
                 except Exception: log.exception("Não foi possível atualizar painel de análise.")
 class ReviewView(discord.ui.LayoutView):
-    def __init__(self,rid,user_id,roblox,account,stats,logs,verification,proof_url=None,is_image=False):
+    def __init__(self,rid,user_id,roblox,account,stats,logs,verification,proof_url=None,is_image=False,proof_urls=None):
         super().__init__(timeout=None)
         yes=discord.ui.Button(label="Aprovar",style=discord.ButtonStyle.success,custom_id=f"logs:approve:{rid}",emoji="✅")
         no=discord.ui.Button(label="Reprovar",style=discord.ButtonStyle.danger,custom_id=f"logs:reject:{rid}",emoji="❌")
@@ -308,8 +320,9 @@ class ReviewView(discord.ui.LayoutView):
             discord.ui.Separator(),
             discord.ui.TextDisplay(f"### 🛡️ Verificação\n{verification}")
         ]
-        if is_image and proof_url:
-            items.append(discord.ui.MediaGallery(discord.MediaGalleryItem(proof_url,description="Comprovante enviado")))
+        gallery_urls=proof_urls or ([proof_url] if is_image and proof_url else [])
+        if gallery_urls:
+            items.append(discord.ui.MediaGallery(*[discord.MediaGalleryItem(url,description=f"Comprovante {n}") for n,url in enumerate(gallery_urls,1)]))
         items.append(discord.ui.Separator())
         buttons=[yes,no]
         if proof_url and not is_image:
@@ -478,25 +491,29 @@ async def editar_conta_live(i:discord.Interaction,views_unidade:app_commands.Ran
     await i.response.send_message("✅ **Regras de LIVES atualizadas parcialmente.**\n"+summary,ephemeral=True)
     await audit(i.guild,f"⚙️ {i.user.mention} atualizou parcialmente as regras de conversão LIVE.")
 @bot.tree.command(name="registrar_logs_live",description="Envia uma LIVE para análise e cálculo de LOGS.")
-async def registrar_logs_live(i:discord.Interaction,nickroblox:app_commands.Range[str,1,80],nickdiscord:app_commands.Range[str,1,80],cargonocomex:app_commands.Range[str,1,100],viewsdalive:app_commands.Range[int,0,100000000],comprovacao:discord.Attachment):
-    if comprovacao.size>8*1024*1024: return await i.response.send_message("Comprovação maior que 8 MB.",ephemeral=True)
-    if not (comprovacao.content_type or "").startswith(("image/","video/")): return await i.response.send_message("Envie uma imagem ou vídeo como comprovação.",ephemeral=True)
-    try: raw=await comprovacao.read()
-    except Exception: return await i.response.send_message("Não consegui ler a comprovação.",ephemeral=True)
-    proof_hash=hashlib.sha256(raw).hexdigest()
-    flags=[]
+async def registrar_logs_live(i:discord.Interaction,nickroblox:app_commands.Range[str,1,80],nickdiscord:app_commands.Range[str,1,80],cargonocomex:app_commands.Range[str,1,100],viewsdalive:app_commands.Range[int,0,100000000],comprovacao:discord.Attachment,foto2:discord.Attachment=None,foto3:discord.Attachment=None,foto4:discord.Attachment=None,foto5:discord.Attachment=None,foto6:discord.Attachment=None,foto7:discord.Attachment=None,foto8:discord.Attachment=None,foto9:discord.Attachment=None,foto10:discord.Attachment=None):
+    photos=[x for x in (comprovacao,foto2,foto3,foto4,foto5,foto6,foto7,foto8,foto9,foto10) if x]
+    urls=[]; types=[]; hashes=[]; flags=[]
+    for photo in photos:
+        if photo.size>8*1024*1024: return await i.response.send_message(f"O arquivo {photo.filename} ultrapassa 8 MB.",ephemeral=True)
+        if not (photo.content_type or "").startswith("image/"): return await i.response.send_message(f"O arquivo {photo.filename} não é uma imagem. Envie apenas fotos.",ephemeral=True)
+        try: raw=await photo.read()
+        except Exception: return await i.response.send_message(f"Não consegui ler {photo.filename}.",ephemeral=True)
+        urls.append(photo.url); types.append(photo.content_type or ""); hashes.append(hashlib.sha256(raw).hexdigest())
     total=calculate_live(viewsdalive)
     with db() as c:
-        old=c.execute("SELECT live_id,user_id FROM live_proof_hashes WHERE hash=?",(proof_hash,)).fetchone()
-        if old: flags.append(f"Comprovação idêntica já usada no cadastro LIVE #{old['live_id']} (usuário {old['user_id']}).")
+        for proof_hash in hashes:
+            old=c.execute("SELECT live_id,user_id FROM live_proof_hashes WHERE hash=?",(proof_hash,)).fetchone()
+            if old: flags.append(f"Foto idêntica já usada no cadastro LIVE #{old['live_id']} (usuário {old['user_id']}).")
         if not viewsdalive: flags.append("As visualizações estão zeradas.")
-        cur=c.execute("INSERT INTO live_registrations(user_id,roblox,discord_nick,comex_role,views,likes,logs,proof_url,proof_hash,proof_type,flags,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(i.user.id,nickroblox,nickdiscord,cargonocomex,viewsdalive,0,total,comprovacao.url,proof_hash,comprovacao.content_type or "",json.dumps(flags,ensure_ascii=False),now()))
+        cur=c.execute("INSERT INTO live_registrations(user_id,roblox,discord_nick,comex_role,views,likes,logs,proof_url,proof_hash,proof_type,proof_urls,proof_types,flags,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(i.user.id,nickroblox,nickdiscord,cargonocomex,viewsdalive,0,total,urls[0],hashes[0],types[0],json.dumps(urls),json.dumps(types),json.dumps(flags,ensure_ascii=False),now()))
         rid=cur.lastrowid
-        c.execute("INSERT OR IGNORE INTO live_proof_hashes VALUES(?,?,?,?)",(proof_hash,rid,i.user.id,now()))
-    await i.response.send_message(f"Cadastro LIVE #{rid} enviado para análise. Cálculo preliminar: **{total} LOGS**. O crédito ocorre somente após aprovação.\n\n📅 Aviso: para as contagens semanais, só entram registros feitos nesta semana (segunda a domingo).",ephemeral=True)
+        for proof_hash in hashes: c.execute("INSERT OR IGNORE INTO live_proof_hashes VALUES(?,?,?,?)",(proof_hash,rid,i.user.id,now()))
+    await i.response.send_message(f"Cadastro LIVE #{rid} enviado com {len(photos)} foto(s) para análise. Cálculo preliminar: **{total} LOGS**. O crédito ocorre somente após aprovação.",ephemeral=True)
     await post_live_review(rid)
     await post_registration_notice(i.guild,"live",rid)
-    await audit(i.guild,f"🔴 Novo cadastro LIVE #{rid} enviado por {i.user.mention}.")
+    await audit(i.guild,f"🔴 Novo cadastro LIVE #{rid} enviado por {i.user.mention} com {len(photos)} foto(s).")
+
 @bot.tree.command(name="ranking_semanal",description="Top 3 semanal de views e curtidas dos vídeos aprovados.")
 async def ranking_semanal(i:discord.Interaction):
     from datetime import timedelta
@@ -519,30 +536,34 @@ async def ranking_semanal(i:discord.Interaction):
         accent_colour=0x9167FF))
     await i.response.send_message(view=layout)
 @bot.tree.command(name="registrar_logs",description="Envia números e comprovante para análise.")
-async def registrar_logs(i:discord.Interaction,roblox_nick:app_commands.Range[str,1,80],conta_social:app_commands.Range[str,1,150],curtidas:app_commands.Range[int,0,100000000],seguidores:app_commands.Range[int,0,100000000],views:app_commands.Range[int,0,100000000]=0,comprovante:discord.Attachment=None,link_comprovante:str=None):
-    if not comprovante and not link_comprovante: return await i.response.send_message("Envie um arquivo ou link de comprovante.",ephemeral=True)
-    proof_hash=None; url=link_comprovante.strip() if link_comprovante else None
-    if comprovante:
-        if comprovante.size>8*1024*1024: return await i.response.send_message("Arquivo maior que 8 MB.",ephemeral=True)
-        try: proof_hash=hashlib.sha256(await comprovante.read()).hexdigest(); url=comprovante.url; proof_type=comprovante.content_type or ""
-        except Exception: return await i.response.send_message("Não consegui ler o arquivo.",ephemeral=True)
-    total=calculate(views,curtidas,seguidores); flags=[]
+async def registrar_logs(i:discord.Interaction,roblox_nick:app_commands.Range[str,1,80],conta_social:app_commands.Range[str,1,150],curtidas:app_commands.Range[int,0,100000000],seguidores:app_commands.Range[int,0,100000000],views:app_commands.Range[int,0,100000000]=0,comprovante:discord.Attachment=None,link_comprovante:str=None,foto2:discord.Attachment=None,foto3:discord.Attachment=None,foto4:discord.Attachment=None,foto5:discord.Attachment=None,foto6:discord.Attachment=None,foto7:discord.Attachment=None,foto8:discord.Attachment=None,foto9:discord.Attachment=None,foto10:discord.Attachment=None):
+    photos=[x for x in (comprovante,foto2,foto3,foto4,foto5,foto6,foto7,foto8,foto9,foto10) if x]
+    if not photos and not link_comprovante: return await i.response.send_message("Envie pelo menos uma foto ou link de comprovante.",ephemeral=True)
+    urls=[]; types=[]; hashes=[]; flags=[]
+    for photo in photos:
+        if photo.size>8*1024*1024: return await i.response.send_message(f"O arquivo {photo.filename} ultrapassa 8 MB.",ephemeral=True)
+        if not (photo.content_type or "").startswith("image/"): return await i.response.send_message(f"O arquivo {photo.filename} não é uma imagem. Envie apenas fotos.",ephemeral=True)
+        try: raw=await photo.read()
+        except Exception: return await i.response.send_message(f"Não consegui ler {photo.filename}.",ephemeral=True)
+        urls.append(photo.url); types.append(photo.content_type or ""); hashes.append(hashlib.sha256(raw).hexdigest())
+    if link_comprovante and not urls: urls.append(link_comprovante.strip()); types.append("")
+    total=calculate(views,curtidas,seguidores)
     with db() as c:
-        if proof_hash:
+        for proof_hash in hashes:
             old=c.execute("SELECT registration_id,user_id FROM proof_hashes WHERE hash=?",(proof_hash,)).fetchone()
-            if old: flags.append(f"Arquivo idêntico já usado no cadastro #{old['registration_id']} (usuário {old['user_id']}).")
-        if url:
-            old=c.execute("SELECT id FROM registrations WHERE proof_url=? LIMIT 1",(url,)).fetchone()
+            if old: flags.append(f"Foto idêntica já usada no cadastro #{old['registration_id']} (usuário {old['user_id']}).")
+        if link_comprovante:
+            old=c.execute("SELECT id FROM registrations WHERE proof_url=? LIMIT 1",(link_comprovante.strip(),)).fetchone()
             if old: flags.append(f"Link já usado no cadastro #{old['id']}.")
         if not any((views,curtidas,seguidores)): flags.append("Todos os números estão zerados.")
-        if max(views,curtidas,seguidores)>100000000: flags.append("Valor muito alto.")
-        cur=c.execute("INSERT INTO registrations(user_id,roblox,account,views,likes,followers,logs,proof_url,proof_hash,proof_type,flags,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(i.user.id,roblox_nick,conta_social,views,curtidas,seguidores,total,url,proof_hash,proof_type,json.dumps(flags,ensure_ascii=False),now()))
+        cur=c.execute("INSERT INTO registrations(user_id,roblox,account,views,likes,followers,logs,proof_url,proof_hash,proof_type,proof_urls,proof_types,flags,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(i.user.id,roblox_nick,conta_social,views,curtidas,seguidores,total,urls[0] if urls else None,hashes[0] if hashes else None,types[0] if types else "",json.dumps(urls),json.dumps(types),json.dumps(flags,ensure_ascii=False),now()))
         rid=cur.lastrowid
-        if proof_hash: c.execute("INSERT OR IGNORE INTO proof_hashes VALUES(?,?,?,?)",(proof_hash,rid,i.user.id,now()))
-    await i.response.send_message(f"Cadastro #{rid} enviado! Cálculo: {total} LOGS. Status: PENDENTE; o saldo só entra após aprovação.\n\n📅 Aviso: para as contagens semanais, só entram registros feitos nesta semana (segunda a domingo).",ephemeral=True)
+        for proof_hash in hashes: c.execute("INSERT OR IGNORE INTO proof_hashes VALUES(?,?,?,?)",(proof_hash,rid,i.user.id,now()))
+    await i.response.send_message(f"Cadastro #{rid} enviado com {len(photos)} foto(s) para análise. Cálculo: {total} LOGS. Status: PENDENTE; o saldo só entra após aprovação.",ephemeral=True)
     await post_review(bot,rid)
     await post_registration_notice(i.guild,"video",rid)
-    await audit(i.guild,f"📥 Novo cadastro #{rid} enviado por {i.user.mention}.")
+    await audit(i.guild,f"📥 Novo cadastro #{rid} enviado por {i.user.mention} com {len(photos)} foto(s).")
+
 @bot.tree.command(name="transferir_logs",description="Solicita uma transferência de LOGS para outro membro.")
 async def transferir_logs(i:discord.Interaction,recebedor:discord.Member,quantidade:app_commands.Range[int,1,1000000000],motivo:app_commands.Range[str,1,250]):
     if recebedor.bot: return await i.response.send_message("Não é possível transferir LOGS para bots.",ephemeral=True)
