@@ -644,10 +644,24 @@ async def editar_saldo(i,membro:discord.Member,quantidade:app_commands.Range[int
 @bot.tree.command(name="descontar_saldo",description="Desconta LOGS da carteira.")
 @admin()
 async def descontar_saldo(i,membro:discord.Member,quantidade:app_commands.Range[int,1,1000000000],motivo:app_commands.Range[str,1,250]):
+    await i.response.defer(ephemeral=True)
     try:
-        with db() as c: c.execute("BEGIN IMMEDIATE"); b=movement(c,membro.id,-quantidade,"DESCONTO",motivo,i.user.id)
-    except ValueError as e: return await i.response.send_message(str(e),ephemeral=True)
-    await i.response.send_message(f"Descontados {quantidade} LOGS. Saldo: {b}.",ephemeral=True); await audit(i.guild,f"➖ {i.user.mention} descontou {quantidade} de {membro.mention}. Motivo: {motivo}")
+        with db() as c:
+            c.execute("BEGIN IMMEDIATE")
+            b=movement(c,membro.id,-quantidade,"DESCONTO",motivo,i.user.id)
+    except ValueError as e:
+        return await i.edit_original_response(content=str(e))
+    except sqlite3.Error:
+        log.exception("Erro SQLite ao descontar saldo")
+        return await i.edit_original_response(content="Não foi possível descontar os LOGS por um erro no banco de dados. Tente novamente.")
+    except Exception:
+        log.exception("Erro inesperado no comando descontar_saldo")
+        return await i.edit_original_response(content="Ocorreu um erro inesperado ao descontar os LOGS. O erro foi registrado para análise.")
+    await i.edit_original_response(content=f"Descontados {quantidade} LOGS de {discord.utils.escape_markdown(membro.display_name)}. Saldo: **{b} LOGS**.")
+    try:
+        await audit(i.guild,f"➖ {i.user.mention} descontou {quantidade} de {membro.mention}. Motivo: {motivo}")
+    except Exception:
+        log.exception("Saldo descontado, mas falhou o envio da auditoria")
 @bot.tree.command(name="consultar_logs",description="Consulta saldo de qualquer membro.")
 @admin()
 async def consultar_logs(i,membro:discord.Member): await i.response.send_message(f"{membro.mention}: **{balance(membro.id)} LOGS**.",ephemeral=True)
